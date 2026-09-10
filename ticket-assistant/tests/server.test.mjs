@@ -19,6 +19,9 @@ test('로컬 API가 토큰과 요청 출처를 검사하고 선택한 티켓처�
   const origin = 'http://127.0.0.1:' + server.address().port;
   const boot = await fetch(origin + '/api/bootstrap').then(r => r.json());
   assert.equal(boot.providers.length, 5);
+  assert.equal(boot.capabilities.seatMaps, true);
+  assert.equal(boot.capabilities.venueMaps, true);
+  assert.equal(typeof boot.revision, 'string');
   const request = (headers = {}, id = 'melon') => fetch(origin + '/api/providers/' + id + '/open', { method: 'POST', headers });
   assert.equal((await request()).status, 403);
   assert.equal((await request({ 'x-ticket-token': boot.token, origin: 'https://evil.com' })).status, 403);
@@ -39,6 +42,52 @@ test('설정을 저장하고 재시작 후 복원하며 손상된 파일을 조�
   assert.equal(await readFile(file, 'utf8'), '{broken');
 });
 const runnable = () => ({ ...defaultPreferences(), selected: ['melon'], date: '2099-10-17', time: '19:00', zones: 'A구역', urls: { melon: 'https://ticket.melon.com/performance/index.htm?prodId=1' } });
+
+test('좌석도 API도 토큰·출처를 검사하며 준비 요청만 미리보기 모드를 사용한다', async t => {
+  const runtime = createApp({ browsers: { sessions: new Map(), snapshot: () => ({}), close: async () => {} } });
+  const server = runtime.app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = 'http://127.0.0.1:' + server.address().port;
+  const boot = await fetch(url + '/api/bootstrap').then(response => response.json());
+  const calls = [];
+  runtime.runner.start = async (body, options) => { calls.push({ body, options }); return { status: 'prepared' }; };
+  const request = (path, body, headers = {}) => fetch(url + '/api' + path, { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  assert.equal((await request('/seat-maps/prepare', runnable())).status, 403);
+  const headers = { 'x-ticket-token': boot.token };
+  assert.equal((await request('/seat-maps/prepare', runnable(), { ...headers, origin: 'https://evil.com' })).status, 403);
+  assert.equal((await request('/seat-maps/prepare', runnable(), headers)).status, 200);
+  assert.deepEqual(calls[0].options, { preview: true });
+  assert.equal((await request('/run', { ...runnable(), preview: true }, headers)).status, 200);
+  assert.equal(calls[1].options, undefined);
+  runtime.runner.seatMaps.set('melon', { key: 'fixture-map', seats: [] });
+  assert.equal((await request('/providers/melon/seat-map')).status, 403);
+  assert.equal((await request('/providers/melon/seat-map', null, headers)).status, 200);
+  assert.equal((await request('/providers/nol/seat-map', null, headers)).status, 404);
+  assert.equal((await request('/providers/unknown/seat-map', null, headers)).status, 400);
+  assert.equal((await request('/providers/melon/seat-map/refresh', {}, headers)).status, 400);
+});
+test('공연장 찾기 API는 토큰을 검사하고 공개 공연 주소만 검사기에 전달한다', async t => {
+  const calls = [];
+  const runtime = createApp({
+    browsers: { sessions: new Map(), snapshot: () => ({}), close: async () => {} },
+    inspect: async input => { calls.push(input); return { title: '테스트 공연', venue: '블루스퀘어 우리은행홀', venueId: 'blue-square-woori' }; },
+  });
+  const server = runtime.app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(async () => { await runtime.close(); await new Promise(resolve => server.close(resolve)); });
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  const boot = await fetch(origin + '/api/bootstrap').then(response => response.json());
+  const body = { url: 'https://ticket.melon.com/performance/index.htm?prodId=213480' };
+  const post = headers => fetch(origin + '/api/providers/melon/performance/inspect', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  assert.equal((await post()).status, 403);
+  const response = await post({ 'x-ticket-token': boot.token });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).venueId, 'blue-square-woori');
+  assert.deepEqual(calls, [{ id: 'melon', url: body.url }]);
+  runtime.runner.state.status = 'running';
+  assert.equal((await post({ 'x-ticket-token': boot.token })).status, 409);
+});
 test('실제 로그인 확인 전에는 예매 실행이 시작되지 않는다', async () => {
   const runner = new Runner({ check: async () => ({ status: 'unknown' }) });
   await assert.rejects(runner.start(runnable()), /로그인/);

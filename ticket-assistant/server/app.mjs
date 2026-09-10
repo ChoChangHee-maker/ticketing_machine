@@ -5,8 +5,10 @@ import { BrowserManager } from './browser.mjs';
 import { Runner } from './automation.mjs';
 import { loadPreferences, savePreferences } from './store.mjs';
 import { ACTIVE_RUN_STATES } from '../shared/model.mjs';
+import { API_REVISION } from '../shared/app-version.mjs';
+import { inspectPerformance } from './performance-inspector.mjs';
 
-export function createApp({ browsers: suppliedBrowsers, load = loadPreferences, save = savePreferences } = {}) {
+export function createApp({ browsers: suppliedBrowsers, load = loadPreferences, save = savePreferences, inspect = inspectPerformance } = {}) {
   const app = express();
   const token = randomBytes(32).toString('hex');
   const logs = [];
@@ -37,13 +39,13 @@ export function createApp({ browsers: suppliedBrowsers, load = loadPreferences, 
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) return res.status(403).json({ error: '연결이 만료되었습니다. 프로그램 화면을 새로고침해주세요.' });
     next();
   });
-  app.use(express.json({ limit: '64kb' }));
-  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'ticket-assistant' }));
+  app.use(express.json({ limit: '1mb' }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'ticket-assistant', revision: API_REVISION }));
   app.get('/api/bootstrap', async (_req, res) => {
     let settings = null;
     let settingsError = '';
     try { settings = await load(); } catch (error) { settingsError = error.message; }
-    res.json({ token, providers: PROVIDERS, settings, settingsError });
+    res.json({ token, providers: PROVIDERS, settings, settingsError, revision: API_REVISION, capabilities: { seatMaps: true, venueMaps: true } });
   });
   app.get('/api/status', (_req, res) => res.json({ logins: browsers.snapshot(), run: runner.snapshot(), logs }));
   app.post('/api/settings', async (req, res) => { res.json(await save(req.body)); });
@@ -65,6 +67,19 @@ export function createApp({ browsers: suppliedBrowsers, load = loadPreferences, 
   });
   app.post('/api/providers/:id/resume', async (req, res) => { res.json(await runner.resume(req.params.id, req.body)); });
   app.post('/api/run', async (req, res) => { res.json(await runner.start(req.body)); });
+  app.post('/api/seat-maps/prepare', async (req, res) => { res.json(await runner.start(req.body, { preview: true })); });
+  app.get('/api/providers/:id/seat-map', (req, res) => {
+    getProvider(req.params.id);
+    const map = runner.seatMaps.get(req.params.id);
+    if (!map) return res.status(404).json({ error: '아직 불러온 좌석도가 없습니다.' });
+    res.json(map);
+  });
+  app.post('/api/providers/:id/performance/inspect', async (req, res) => {
+    getProvider(req.params.id);
+    if (ACTIVE_RUN_STATES.includes(runner.state.status)) return res.status(409).json({ error: '실행 중에는 공연 설정을 바꿀 수 없습니다.' });
+    res.json(await inspect({ id: req.params.id, url: req.body?.url }));
+  });
+  app.post('/api/providers/:id/seat-map/refresh', async (req, res) => { res.json(await runner.refreshSeatMap(req.params.id)); });
   app.post('/api/stop', (_req, res) => { runner.stop(); res.json({ ok: true }); });
   app.use('/api', (_req, res) => res.status(404).json({ error: '요청한 기능을 찾지 못했습니다.' }));
   app.use((error, _req, res, _next) => { res.status(error.status || 400).json({ error: error.message || '요청을 처리하지 못했습니다.' }); });

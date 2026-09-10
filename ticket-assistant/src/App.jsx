@@ -2,10 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import './resume.css';
 import { Activity, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ExternalLink, Globe2, Layers3, Link2, LoaderCircle, LogIn, Monitor, Pause, Play, Plus, RefreshCw, Save, Settings2, ShieldCheck, Ticket, X, Minus } from 'lucide-react';
 import { PROVIDERS, LOGIN_LABELS } from '../shared/providers.mjs';
-import { defaultPreferences, splitPreferences, ACTIVE_RUN_STATES, PHASE_LABELS } from '../shared/model.mjs';
+import { defaultPreferences, validatePreferences, splitPreferences, ACTIVE_RUN_STATES, PHASE_LABELS } from '../shared/model.mjs';
+import { matchingPreference } from '../shared/seat-map.mjs';
+import SeatMapPreferences from './SeatMapPreferences.jsx';
+import { API_REVISION } from '../shared/app-version.mjs';
 
 const MENU = [{ id: 'prepare', label: '예매 준비', icon: Ticket }, { id: 'login', label: '로그인 연결', icon: ShieldCheck }, { id: 'profiles', label: '화면 연결', icon: Settings2 }, { id: 'logs', label: '실행 기록', icon: Activity }];
 const timeOf = value => value ? new Date(value).toLocaleTimeString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' }) : '—';
+const RUN_LABELS = { idle: '준비 대기', validating: '실행 전 로그인 확인 중', scheduled: '예약 시간까지 대기', running: '예매 진행 중', prepared: '좌석도 준비됨', waiting: '직접 확인 후 이어가기', stopping: '중지 처리 중', stopped: '실행 중지됨', attention: '진행하지 못함 · 실행 기록 확인', error: '실행 오류 · 실행 기록 확인', review: '좌석 확인 필요' };
+const validateConfiguration = config => { try { validatePreferences(config, true); return ''; } catch (error) { return error.message; } };
 const profileFields = [{ key: 'entry', label: '예매하기 버튼', hint: '예: #ticketBooking' }, { key: 'date', label: '관람 날짜', hint: '예: [data-date="{date}"]' }, { key: 'time', label: '회차', hint: '예: [data-time="{time}"]' }, { key: 'zone', label: '구역', hint: '예: [data-zone="{zone}"]' }, { key: 'seat', label: '개별 좌석', hint: '예: [data-seat-id]' }];
 
 export default function App() {
@@ -13,19 +18,26 @@ export default function App() {
   const [tab, setTab] = useState('prepare');
   const [multi, setMulti] = useState(true);
   const [connected, setConnected] = useState(false);
+  const [serverRevision, setServerRevision] = useState('');
   const [status, setStatus] = useState({ logins: {}, run: { status: 'idle', jobs: {} }, logs: [] });
   const [busy, setBusy] = useState({});
   const [message, setMessage] = useState(null);
   const [now, setNow] = useState(new Date());
   const token = useRef('');
+  const [performanceInfo, setPerformanceInfo] = useState({});
   const requestBusy = useRef(new Set());
   const active = Boolean(busy.run) || ACTIVE_RUN_STATES.includes(status.run.status);
   const checkingLocked = busy.run || ['validating', 'running', 'scheduled', 'stopping'].includes(status.run.status);
   const selected = PROVIDERS.filter(p => config.selected.includes(p.id));
   const verified = selected.filter(p => status.logins[p.id]?.status === 'verified');
-  const configured = selected.length > 0 && selected.every(p => config.urls[p.id]) && config.date && config.time && config.zones;
-  const ready = configured && verified.length === selected.length && connected && !active;
+  const configurationError = validateConfiguration(config);
+  const configured = !configurationError;
+  const connecting = selected.some(p => busy[p.id]);
+  const ready = configured && verified.length === selected.length && connected && !active && !connecting;
+  const runLabel = RUN_LABELS[busy.run && !ACTIVE_RUN_STATES.includes(status.run.status) ? 'validating' : status.run.status] || status.run.status;
+  const runBlocker = !connected ? '로컬 프로그램에 연결한 뒤 실행할 수 있습니다.' : active ? '' : configurationError || (connecting ? '티켓처 연결 확인을 마칠 때까지 기다려주세요.' : verified.length !== selected.length ? '로그인 연결에서 선택한 티켓처의 로그인을 확인해주세요.' : '');
   const zones = splitPreferences(config.zones);
+  const venueMapsAvailable = serverRevision === API_REVISION;
 
   async function api(path, data, method = data === undefined ? 'GET' : 'POST') {
     const response = await fetch('/api' + path, { method, headers: { 'Content-Type': 'application/json', 'X-Ticket-Token': token.current }, ...(data !== undefined ? { body: JSON.stringify(data) } : {}) });
@@ -43,6 +55,7 @@ export default function App() {
         const result = await api('/bootstrap');
         if (disposed) return;
         token.current = result.token;
+        setServerRevision(result.revision || 'legacy');
         if (result.settings) setConfig(result.settings);
         if (result.settingsError) setMessage({ type: 'error', text: result.settingsError });
         setConnected(true);
@@ -56,7 +69,7 @@ export default function App() {
           setConnected(false);
           try {
             const bootstrap = await api('/bootstrap');
-            if (!disposed) token.current = bootstrap.token;
+            if (!disposed) { token.current = bootstrap.token; setServerRevision(bootstrap.revision || 'legacy'); }
           } catch { /* Retry the connection without replacing unsaved settings. */ }
         }
       }
@@ -94,10 +107,35 @@ export default function App() {
     if (!removing) connect(id);
   }
   const save = () => action('save', async () => { await api('/settings', config); setMessage({ type: 'success', text: '이 PC에 예매 설정을 저장했습니다.' }); });
-  const start = () => action('run', async () => { setMessage(null); const run = await api('/run', config); setStatus(prev => ({ ...prev, run })); setTab('logs'); });
+  const start = () => action('run', async () => { setMessage(null); setTab('logs'); const run = await api('/run', config); setStatus(prev => ({ ...prev, run })); });
   const resume = (id, phase) => action(id, async () => { const run = await api('/providers/' + id + '/resume', { runId: status.run.runId, phase }); setStatus(prev => ({ ...prev, run })); });
   const stop = () => action('stop', async () => { await api('/stop', {}); setMessage({ type: 'success', text: '중지를 요청했습니다. 현재 화면과 로그인은 유지됩니다.' }); });
   const changeProfile = (id, key, value) => patch({ profiles: { ...config.profiles, [id]: { ...config.profiles[id], [key]: value } } });
+  const setSeatPreference = (id, value) => setConfig(previous => ({ ...previous, seatPreferences: { ...previous.seatPreferences, [id]: value } }));
+  function changePerformanceUrl(id, value) {
+    setPerformanceInfo(previous => { const next = { ...previous }; delete next[id]; return next; });
+    setConfig(previous => {
+      if (previous.urls[id] === value) return previous;
+      const seatPreferences = { ...previous.seatPreferences };
+      delete seatPreferences[id];
+      return { ...previous, urls: { ...previous.urls, [id]: value }, venues: { ...previous.venues, [id]: '' }, seatPreferences };
+    });
+  }
+  function changeVenue(id, venueId) {
+    setConfig(previous => {
+      if (previous.venues[id] === venueId) return previous;
+      const seatPreferences = { ...previous.seatPreferences };
+      delete seatPreferences[id];
+      return { ...previous, venues: { ...previous.venues, [id]: venueId }, seatPreferences };
+    });
+  }
+  const inspectVenue = id => action('inspect-' + id, async () => {
+    setMessage(null);
+    const result = await api('/providers/' + id + '/performance/inspect', { url: config.urls[id] });
+    setPerformanceInfo(previous => ({ ...previous, [id]: result }));
+    if (result.venueId) changeVenue(id, result.venueId);
+    if (result.title) setConfig(previous => previous.title ? previous : { ...previous, title: result.title });
+  });
 
   function loginCard(provider) {
     const info = status.logins[provider.id] || { status: 'idle', detail: '연결하면 공식 사이트에서 로그인 상태를 확인합니다.' };
@@ -117,16 +155,21 @@ export default function App() {
 
       {(tab === 'prepare' || tab === 'login') && <section className="panel providers-panel"><div className="panel-heading"><div className="section-label"><span className="step-number">01</span><h2>티켓처 선택</h2><span className="count-pill">{selected.length}개 선택</span></div><div className="segmented" aria-label="티켓처 선택 방식"><button aria-pressed={!multi} className={!multi ? 'selected' : ''} disabled={active} onClick={() => { setMulti(false); if (config.selected.length > 1) patch({ selected: config.selected.slice(0, 1) }); }}>단일 선택</button><button aria-pressed={multi} className={multi ? 'selected' : ''} disabled={active} onClick={() => setMulti(true)}>다중 선택</button></div></div><p className="panel-description">티켓처를 선택하면 전용 브라우저가 열리고 로그인 상태를 확인합니다.</p><div className="providers-grid">{PROVIDERS.map(p => { const checked = config.selected.includes(p.id); const login = status.logins[p.id]?.status || 'idle'; return <button key={p.id} className={'provider-card ' + (checked ? 'chosen' : '')} style={{ '--brand': p.color }} disabled={!connected || active} aria-pressed={checked} onClick={() => toggleProvider(p.id)}><span className="select-check">{checked && <Check size={12} />}</span><span className="provider-logo">{p.short}</span><strong>{p.name}</strong><span className={'provider-state ' + login}>{busy[p.id] ? <LoaderCircle size={11} className="spin" /> : <i />}{checked ? LOGIN_LABELS[login] === '선택 안 함' ? '연결 필요' : LOGIN_LABELS[login] : '선택하여 연결'}</span></button>; })}</div><div className="panel-footnote"><ShieldCheck size={13} /><span>로그인은 티켓처 공식 창에서 진행합니다. 아이디와 비밀번호를 프로그램에 입력하지 않습니다.</span><button onClick={() => setTab('login')}>연결 상태 보기 <ArrowRight size={12} /></button></div></section>}
 
-      {tab === 'prepare' && <div className="preparation-grid"><div className="form-stack"><section className="panel"><div className="panel-heading"><div className="section-label"><span className="step-number">02</span><h2>공연과 회차</h2></div><span className="muted-tag">공연 URL은 나중에 입력 가능</span></div><fieldset disabled={active}><label className="field">공연 이름 <span className="optional">선택</span><input value={config.title} onChange={e => patch({ title: e.target.value })} placeholder="예매할 뮤지컬 이름을 입력하세요" maxLength={100} /></label><div className="url-fields">{selected.length ? selected.map(p => <label className="field" key={p.id}><span className="field-with-dot"><i style={{ background: p.color }} />{p.name} 공연 URL</span><div className="input-icon"><Link2 size={15} /><input type="url" value={config.urls[p.id] || ''} onChange={e => patch({ urls: { ...config.urls, [p.id]: e.target.value } })} placeholder={p.hint} /></div></label>) : <div className="inline-empty"><Globe2 size={17} /> 위에서 티켓처를 선택하면 공연 주소 입력란이 나타납니다.</div>}</div><div className="form-row"><label className="field">관람 날짜<div className="input-icon"><CalendarDays size={15} /><input type="date" value={config.date} onChange={e => patch({ date: e.target.value })} /></div></label><label className="field">관람 회차<div className="input-icon"><Clock3 size={15} /><input type="time" value={config.time} onChange={e => patch({ time: e.target.value })} /></div></label></div><div className="helper-line"><CircleHelp size={13} /> 관람 회차와 티켓 오픈 시간을 구분해서 입력해주세요. 모든 시간은 한국 시간입니다.</div></fieldset></section>
-      <section className="panel"><div className="panel-heading"><div className="section-label"><span className="step-number">03</span><h2>원하는 좌석</h2></div><span className="muted-tag">입력한 순서대로 확인</span></div><fieldset disabled={active}><label className="field">선호 구역<textarea rows={2} value={config.zones} onChange={e => patch({ zones: e.target.value })} placeholder={'1층 A구역, 1층 B구역\n공연 좌석도에 표시된 구역명을 입력하세요'} /></label>{zones.length > 0 && <div className="preference-tags">{zones.map((zone, index) => <span key={index}><b>{index + 1}</b>{zone}</span>)}</div>}<div className="form-row seat-options"><label className="field">선호 열 <span className="optional">비워두면 전체</span><input value={config.rows} onChange={e => patch({ rows: e.target.value })} placeholder="예: 3, 4, 5" /></label><div className="field">예매 매수<div className="stepper"><button type="button" aria-label="매수 줄이기" disabled={config.quantity <= 1 || active} onClick={() => patch({ quantity: config.quantity - 1 })}><Minus size={15} /></button><span><b>{config.quantity}</b> 매</span><button type="button" aria-label="매수 늘리기" disabled={config.quantity >= 4 || active} onClick={() => patch({ quantity: config.quantity + 1 })}><Plus size={15} /></button></div></div></div><label className="toggle-row"><span><strong>연석만 선택</strong><small>같은 구역·같은 열의 연속된 좌석을 선택합니다.</small></span><input className="switch-input" type="checkbox" checked={config.adjacent} onChange={e => patch({ adjacent: e.target.checked })} /><span className={'switch ' + (config.adjacent ? 'on' : '')} aria-hidden="true" /></label></fieldset></section>
+      {tab === 'prepare' && <div className="preparation-grid"><div className="form-stack"><section className="panel"><div className="panel-heading"><div className="section-label"><span className="step-number">02</span><h2>공연과 회차</h2></div><span className="muted-tag">공연 URL은 나중에 입력 가능</span></div><fieldset disabled={active}><label className="field">공연 이름 <span className="optional">선택</span><input value={config.title} onChange={e => patch({ title: e.target.value })} placeholder="예매할 뮤지컬 이름을 입력하세요" maxLength={100} /></label><div className="url-fields">{selected.length ? selected.map(p => <label className="field" key={p.id}><span className="field-with-dot"><i style={{ background: p.color }} />{p.name} 공연 URL</span><div className="input-icon"><Link2 size={15} /><input type="url" value={config.urls[p.id] || ''} onChange={e => changePerformanceUrl(p.id, e.target.value)} placeholder={p.hint} /></div></label>) : <div className="inline-empty"><Globe2 size={17} /> 위에서 티켓처를 선택하면 공연 주소 입력란이 나타납니다.</div>}</div><div className="form-row"><label className="field">관람 날짜<div className="input-icon"><CalendarDays size={15} /><input type="date" value={config.date} onChange={e => patch({ date: e.target.value })} /></div></label><label className="field">관람 회차<div className="input-icon"><Clock3 size={15} /><input type="time" value={config.time} onChange={e => patch({ time: e.target.value })} /></div></label></div><div className="helper-line"><CircleHelp size={13} /> 관람 회차와 티켓 오픈 시간을 구분해서 입력해주세요. 모든 시간은 한국 시간입니다.</div></fieldset></section>
+      <section className="panel"><div className="panel-heading"><div className="section-label"><span className="step-number">03</span><h2>공연장 좌석도에서 선택</h2></div><span className="muted-tag">공연장 기준 희망 좌석</span></div>
+        <SeatMapPreferences providers={selected} config={config} busy={busy} connected={connected} supported={venueMapsAvailable} locked={active} performanceInfo={performanceInfo} onInspect={inspectVenue} onVenueChange={changeVenue} onChange={setSeatPreference} />
+        <fieldset disabled={active}><div className="form-row seat-options"><div className="field">예매 매수<div className="stepper"><button type="button" aria-label="매수 줄이기" disabled={config.quantity <= 1 || active} onClick={() => patch({ quantity: config.quantity - 1 })}><Minus size={15} /></button><span><b>{config.quantity}</b> 매</span><button type="button" aria-label="매수 늘리기" disabled={config.quantity >= 4 || active} onClick={() => patch({ quantity: config.quantity + 1 })}><Plus size={15} /></button></div></div></div>
+        <label className="toggle-row"><span><strong>연석만 선택</strong><small>선호 좌석 중 같은 구역·같은 열의 연속된 좌석을 선택합니다.</small></span><input className="switch-input" type="checkbox" checked={config.adjacent} onChange={e => patch({ adjacent: e.target.checked })} /><span className={'switch ' + (config.adjacent ? 'on' : '')} aria-hidden="true" /></label>
+        <details className="manual-seat-settings"><summary>기존 구역·열 직접 입력</summary><p className="subtle-note">좌석도에서 선택한 티켓처는 해당 선호 좌석만 사용합니다. 직접 입력으로 돌아가려면 아래 버튼으로 좌석도 선택을 해제하세요.</p><button type="button" className="button ghost" onClick={() => patch({ seatPreferences: {} })}>좌석도 선택 해제 · 직접 입력 사용</button><label className="field">선호 구역<textarea rows={2} value={config.zones} onChange={e => patch({ zones: e.target.value })} placeholder="공식 좌석도에 표시된 구역명" /></label><label className="field">선호 열<input value={config.rows} onChange={e => patch({ rows: e.target.value })} placeholder="예: 3, 4, 5" /></label></details></fieldset>
+      </section>
       <section className="panel scheduling"><div className="section-label"><Clock3 size={18} /><h2>예약 실행</h2><span className="optional">선택</span></div><label className="field"><span className="sr-only">예매 실행 시간 (한국 시간)</span><input type="datetime-local" step="1" disabled={active} value={config.scheduledAt} onChange={e => patch({ scheduledAt: e.target.value })} /></label><p>비워두면 즉시 실행합니다. 프로그램과 PC를 켜두세요.</p></section></div>
-      <aside className="summary-stack"><section className="panel summary-panel"><div className="summary-title"><span className="overline">YOUR TICKETING PLAN</span><Ticket size={20} /></div><h2>준비한 예매 조건</h2><div className="summary-show"><small>공연</small><strong>{config.title || '아직 설정하지 않았어요'}</strong></div><dl><div><dt>티켓처</dt><dd>{selected.length ? selected.map(p => p.name).join(', ') : '선택 전'}</dd></div><div><dt>관람 날짜</dt><dd>{config.date || '선택 전'}</dd></div><div><dt>회차</dt><dd>{config.time || '선택 전'}</dd></div><div><dt>좌석 수</dt><dd>{config.quantity}매 <span>{config.adjacent && config.quantity > 1 ? '· 연석' : ''}</span></dd></div><div><dt>선호 구역</dt><dd>{zones.length ? zones.join(' → ') : '선택 전'}</dd></div></dl><div className="readiness"><div><span className={selected.length && verified.length === selected.length ? 'done' : ''}><Check size={12} /></span><p>티켓처 로그인 확인</p><b>{verified.length}/{selected.length}</b></div><div><span className={configured ? 'done' : ''}><Check size={12} /></span><p>공연 · 회차 · 구역 설정</p></div><div><span><Monitor size={11} /></span><p>실제 공연 화면 연결 확인</p></div></div><button className="button primary run-button" disabled={!ready || busy.run} onClick={start}>{busy.run ? <LoaderCircle size={16} className="spin" /> : <Play size={15} fill="currentColor" />}{config.scheduledAt ? '예약 실행 대기' : '좌석 선택 실행'}<ArrowRight size={16} /></button>{active && <button className="button stop-button" onClick={stop} disabled={busy.stop}><Pause size={14} /> 실행 중지</button>}<p className="run-note">좌석 선택 후 멈춥니다.<br />선택 상태 확인과 결제는 직접 진행해주세요.</p></section><section className="tip-panel"><CircleHelp size={18} /><div><h3>처음 사용하는 공연이라면</h3><p>예매 화면은 티켓처·공연마다 다릅니다. 자동으로 읽히지 않는 항목은 화면 연결이 필요합니다.</p><button onClick={() => setTab('profiles')}>화면 연결 설정 <ArrowRight size={13} /></button></div></section><section className="status-mini"><span className="overline">LIVE STATUS</span><div className="status-mini-title"><span className={'connection-dot ' + (active ? 'online' : '')} /><strong>{status.run.status === 'waiting' ? '직접 확인 후 이어가기' : active ? '실행 중' : status.run.status === 'review' ? '좌석 확인 필요' : '준비 대기'}</strong></div><p>{active ? '실행 기록에서 티켓처별 진행 상태를 확인하세요.' : '조건을 설정하고 로그인을 완료하면 시작할 수 있습니다.'}</p><button onClick={() => setTab('logs')}>실행 기록 보기 <ArrowRight size={13} /></button></section></aside></div>}
+      <aside className="summary-stack"><section className="panel summary-panel"><div className="summary-title"><span className="overline">YOUR TICKETING PLAN</span><Ticket size={20} /></div><h2>준비한 예매 조건</h2><div className="summary-show"><small>공연</small><strong>{config.title || '아직 설정하지 않았어요'}</strong></div><dl><div><dt>티켓처</dt><dd>{selected.length ? selected.map(p => p.name).join(', ') : '선택 전'}</dd></div><div><dt>관람 날짜</dt><dd>{config.date || '선택 전'}</dd></div><div><dt>회차</dt><dd>{config.time || '선택 전'}</dd></div><div><dt>좌석 수</dt><dd>{config.quantity}매 <span>{config.adjacent && config.quantity > 1 ? '· 연석' : ''}</span></dd></div><div><dt>선호 좌석</dt><dd>{selected.map(p => matchingPreference(config, p.id)?.seats.length ? p.name + ': ' + matchingPreference(config, p.id).seats.length + '석' : null).filter(Boolean).join(', ') || (zones.length ? zones.join(' → ') : '선택 전')}</dd></div></dl><div className="readiness"><div><span className={selected.length && verified.length === selected.length ? 'done' : ''}><Check size={12} /></span><p>티켓처 로그인 확인</p><b>{verified.length}/{selected.length}</b></div><div><span className={configured ? 'done' : ''}><Check size={12} /></span><p>공연 · 회차 · 구역 설정</p></div><div><span><Monitor size={11} /></span><p>실제 공연 화면 연결 확인</p></div></div><button className="button primary run-button" disabled={!ready || busy.run} onClick={start}>{busy.run ? <LoaderCircle size={16} className="spin" /> : <Play size={15} fill="currentColor" />}{config.scheduledAt ? '예약 실행 대기' : '좌석 선택 실행'}<ArrowRight size={16} /></button>{runBlocker && <p className="run-blocker" role="status">{runBlocker}</p>}{active && <button className="button stop-button" onClick={stop} disabled={busy.stop}><Pause size={14} /> 실행 중지</button>}<p className="run-note">좌석 선택 후 멈춥니다.<br />선택 상태 확인과 결제는 직접 진행해주세요.</p></section><section className="tip-panel"><CircleHelp size={18} /><div><h3>처음 사용하는 공연이라면</h3><p>예매 화면은 티켓처·공연마다 다릅니다. 자동으로 읽히지 않는 항목은 화면 연결이 필요합니다.</p><button onClick={() => setTab('profiles')}>화면 연결 설정 <ArrowRight size={13} /></button></div></section><section className="status-mini"><span className="overline">LIVE STATUS</span><div className="status-mini-title"><span className={'connection-dot ' + (active ? 'online' : '')} /><strong>{runLabel}</strong></div><p>{active ? '실행 기록에서 티켓처별 진행 상태를 확인하세요.' : '조건을 설정하고 로그인을 완료하면 시작할 수 있습니다.'}</p><button onClick={() => setTab('logs')}>실행 기록 보기 <ArrowRight size={13} /></button></section></aside></div>}
 
       {tab === 'login' && <><div className="login-intro"><ShieldCheck size={19} /><div><strong>실제 화면에서 확인된 로그인만 인정합니다.</strong><p>로그인 창 접속과 계정 로그인 성공은 다릅니다. 로그아웃 표시 등 성공 근거가 없으면 확인됨으로 표시하지 않습니다.</p></div></div><div className="login-grid">{(selected.length ? selected : PROVIDERS).map(loginCard)}</div><p className="subtle-note">‘새로 확인’은 공식 페이지를 다시 불러옵니다. 계정 메뉴 안에 로그아웃이 있다면 갱신된 창에서 메뉴를 열고 자동 확인을 기다려주세요. 실행 전에도 로그인 상태를 재확인합니다.</p></>}
 
       {tab === 'profiles' && <><div className="notice neutral"><Monitor size={18} /><span>공연 URL을 받은 뒤 실제 예매 화면에서 연결을 검증합니다. 현재 5개 티켓처의 공연별 좌석 선택은 실사이트 검증 전입니다.</span></div><p className="subtle-note">기본 자동 탐색으로 날짜·회차를 찾지 못할 때 사용하는 고급 설정입니다. 로그인·보안문자·결제 동작은 설정 대상이 아닙니다.</p><div className="profile-list">{(selected.length ? selected : PROVIDERS).map(p => <section className="panel profile-card" key={p.id}><div className="panel-heading"><div className="section-label"><span className="provider-logo small" style={{ '--brand': p.color }}>{p.short}</span><h2>{p.name}</h2></div><span className="muted-tag">실제 공연에서 확인 필요</span></div><fieldset disabled={active}><label className="field">진행 순서<select value={config.profiles[p.id]?.order || 'date-first'} onChange={e => changeProfile(p.id, 'order', e.target.value)}><option value="date-first">날짜 → 회차 → 예매하기 → 구역 → 좌석</option><option value="entry-first">예매하기 → 날짜 → 회차 → 구역 → 좌석</option></select></label><div className="profile-fields">{profileFields.map(field => <label className="field" key={field.key}>{field.label}<input value={config.profiles[p.id]?.[field.key] || ''} onChange={e => changeProfile(p.id, field.key, e.target.value)} placeholder={field.hint} spellCheck={false} /></label>)}</div></fieldset></section>)}</div><div className="notice neutral"><CircleHelp size={17} /><span>화면 구조가 불명확하거나 캔버스 좌석도이면 자동 클릭을 멈춥니다. 화면에 없는 좌석이나 임의 좌표를 추측해 선택하지 않습니다.</span></div></>}
 
-      {tab === 'logs' && <section className="panel logs-panel"><div className="panel-heading"><div className="section-label"><Activity size={19} /><h2>실행 현황</h2></div>{active && <button className="button stop-button" onClick={stop}><Pause size={14} /> 실행 중지</button>}</div><div className="job-list">{Object.entries(status.run.jobs).map(([id, job]) => <RunJob key={id + ':' + status.run.runId + ':' + job.phase} id={id} job={job} resumable={status.run.status === 'waiting' && connected && !busy[id]} onResume={phase => resume(id, phase)} onFocus={() => action(id, () => api('/providers/' + id + '/focus', {}))} />)}</div>{!status.logs.length ? <div className="empty"><Activity size={30} /><h3>아직 실행 기록이 없어요</h3><p>예매 조건을 설정하고 시작하면 실제 진행 내용이 여기에 표시됩니다.</p><button className="button secondary" onClick={() => setTab('prepare')}>예매 준비로 돌아가기 <ArrowRight size={14} /></button></div> : <div className="log-list" aria-live="polite">{[...status.logs].reverse().map(log => <div className="log-line" key={log.id}><time>{timeOf(log.at)}</time><span>{PROVIDERS.find(p => p.id === log.provider)?.name || '프로그램'}</span><p>{log.message || (log.type === 'complete' ? log.status === 'waiting' ? '직접 확인 후 이어갈 단계를 선택해주세요.' : '실행이 끝났습니다. 티켓처 화면의 상태를 확인해주세요.' : log.status)}</p></div>)}</div>}</section>}
+      {tab === 'logs' && <section className="panel logs-panel"><div className="panel-heading"><div className="section-label"><Activity size={19} /><h2>실행 현황</h2><span className="run-state" role="status">{runLabel}</span></div>{active && <button className="button stop-button" onClick={stop} disabled={busy.stop || status.run.status === 'stopping'}><Pause size={14} /> {status.run.status === 'stopping' ? '중지 처리 중' : '실행 중지'}</button>}</div><div className="job-list">{Object.entries(status.run.jobs).map(([id, job]) => <RunJob key={id + ':' + status.run.runId + ':' + job.phase} id={id} job={job} resumable={status.run.status === 'waiting' && connected && !busy[id]} onResume={phase => resume(id, phase)} onFocus={() => action(id, () => api('/providers/' + id + '/focus', {}))} />)}</div>{!status.logs.length && !Object.keys(status.run.jobs).length && !active ? <div className="empty"><Activity size={30} /><h3>아직 실행 기록이 없어요</h3><p>예매 조건을 설정하고 시작하면 실제 진행 내용이 여기에 표시됩니다.</p><button className="button secondary" onClick={() => setTab('prepare')}>예매 준비로 돌아가기 <ArrowRight size={14} /></button></div> : <div className="log-list" aria-live="polite">{[...status.logs].reverse().map(log => <div className="log-line" key={log.id}><time>{timeOf(log.at)}</time><span>{PROVIDERS.find(p => p.id === log.provider)?.name || '프로그램'}</span><p>{log.message || (log.type === 'complete' ? log.status === 'waiting' ? '직접 확인 후 이어갈 단계를 선택해주세요.' : '실행이 끝났습니다. 티켓처 화면의 상태를 확인해주세요.' : log.status)}</p></div>)}</div>}</section>}
       <footer className="app-footer"><span><Monitor size={12} /> 이 PC에서 실행되는 개인용 티켓팅 도우미</span><span>로그인 · 보안 확인 · 결제는 공식 티켓처에서</span></footer>
       </main>
     </div>
@@ -136,21 +179,23 @@ export default function App() {
 function RunJob({ id, job, resumable, onResume, onFocus }) {
   const provider = PROVIDERS.find(p => p.id === id);
   const [phase, setPhase] = useState(job.phase || 'zone');
+  const security = job.blockedBy === 'security';
   return <div className="job">
     <span className="provider-logo small" style={{ '--brand': provider.color }}>{provider.short}</span>
     <div className="job-content">
       <strong>{provider.name}</strong><p>{job.message}</p>
       {job.seats && <small>{job.seats.join(' · ')}</small>}
+      {security && <div className="verification-notice" role="status"><ShieldCheck size={17} /><span>보안인증은 공식 예매창에서 직접 완료해주세요. 입력한 문자나 인증번호를 이 프로그램에 전달할 필요는 없습니다.</span></div>}
       {job.canResume && <div className="resume-controls">
-        <p>브라우저에서 직접 완료한 단계가 있으면 그 다음 단계를 선택하세요.</p>
+        <p>{security ? '공식 창에서 입력완료를 누른 뒤 아래 버튼을 누르세요. 인증창이 남아 있으면 다시 대기하며, 새로고침 없이 같은 예매창을 사용합니다.' : '브라우저에서 직접 완료한 단계가 있으면 그 다음 단계를 선택하세요.'}</p>
         <label className="field">{provider.name} 이어갈 단계
           <select value={phase} disabled={!resumable} onChange={event => setPhase(event.target.value)}>
             {job.resumeSteps.map(step => <option key={step} value={step}>{PHASE_LABELS[step]}{step === job.phase ? ' (멈춘 단계부터)' : ''}</option>)}
           </select>
         </label>
-        <button className="button secondary" disabled={!resumable} onClick={() => onResume(phase)}><Play size={14} /> 이 단계부터 이어가기</button>
+        <button className="button secondary" disabled={!resumable} onClick={() => onResume(phase)}><Play size={14} /> {security ? '인증 완료 후 이어가기' : '이 단계부터 이어가기'}</button>
       </div>}
     </div>
-    <button className="button ghost" onClick={onFocus}>화면 보기 <ExternalLink size={13} /></button>
+    <button className="button ghost" onClick={onFocus}>{security ? '인증 화면 보기' : '화면 보기'} <ExternalLink size={13} /></button>
   </div>;
 }

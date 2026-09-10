@@ -3,3 +3,7 @@
 .resume-controls > p { margin: 0 0 12px; }
 .resume-controls .field { margin-bottom: 12px; max-width: 320px; }
 @media (max-width: 600px) { .job { flex-wrap: wrap; } .job-content { flex-basis: calc(100% - 56px); } .resume-controls .button { width: 100%; } }
+.run-blocker{font-size:10px;line-height:1.7;color:#996c49;margin:11px 0 0;overflow-wrap:anywhere}
+.run-state{font-size:10px;color:#6b795f;line-height:1.6}
+.verification-notice { display: flex; align-items: flex-start; gap: 8px; padding: 12px; margin-top: 10px; border-radius: 8px; background: #fff7e8; color: #795317; font-size: 12px; line-height: 1.7; }
+.verification-notice svg { flex-shrink: 0; margin-top: 2px; }

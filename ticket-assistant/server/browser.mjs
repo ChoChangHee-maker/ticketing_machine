@@ -1,11 +1,21 @@
 import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { getProvider, allowedUrl } from '../shared/providers.mjs';
+import { getProvider, allowedUrl, allowedBookingUrl } from '../shared/providers.mjs';
 import { classifyLogin } from '../shared/model.mjs';
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+export function findSystemChrome(environment = process.env, exists = existsSync) {
+  const candidates = [
+    environment.PROGRAMFILES && join(environment.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    environment['PROGRAMFILES(X86)'] && join(environment['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    environment.LOCALAPPDATA && join(environment.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  ].filter(Boolean);
+  return candidates.find(candidate => exists(candidate)) || '';
+}
 
 export function readLoginSignals() {
   const visible = el => Boolean(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none');
@@ -13,19 +23,23 @@ export function readLoginSignals() {
   const names = controls.map(el => (el.getAttribute('aria-label') || el.textContent?.trim() || el.querySelector('img[alt]')?.getAttribute('alt') || el.getAttribute('value') || '').replace(/\s+/g, '').toLowerCase());
   // Read only visibility and labels, never login input values or cookies.
   const passwordVisible = [...document.querySelectorAll('input[type="password"]')].some(visible);
-  const blocked = [...document.querySelectorAll('input[id*="captcha" i],input[name*="captcha" i],iframe[src*="recaptcha"],iframe[src*="hcaptcha"],input[placeholder*="보안문자"]')].some(visible);
+  const bodyText = document.body?.innerText || '';
+  const address = typeof location === 'undefined' ? '' : location.href;
+  const blocked = [...document.querySelectorAll('input[id*="captcha" i],input[name*="captcha" i],iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="challenges.cloudflare.com"],input[placeholder*="보안문자"],input[aria-label*="보안문자"],input[placeholder*="대소문자"][placeholder*="문자"]')].some(visible);
+  const netFunnelInvalid = /facility\.ticketlink\.co\.kr\/error\/popup\/none/i.test(address) && /error\.netfunnel\.invalid\.key/i.test(address)
+    || /비정상적인\s*접근으로\s*이용이\s*일시\s*제한/.test(bodyText) && /정상적인\s*방법으로\s*예매/.test(bodyText);
   const logoutVisible = names.some(name => /^(로그아웃|logout|signout)$/.test(name)) || controls.some(el => /logout|logoff/i.test(el.getAttribute('href') || '') && !/로그인/.test(el.textContent || ''));
-  const loginVisible = names.some(name => /^(로그인|login|signin|로그인하기|회원로그인)$/.test(name));
-  return { passwordVisible, blocked, logoutVisible, loginVisible };
+  const loginVisible = names.some(name => /^(로그인|login|signin|로그인하기|회원로그인|로그인또는회원가입하기|카카오계정로그인|카카오qr코드로그인|멜론아이디로그인)$/.test(name));
+  return { passwordVisible, blocked, netFunnelInvalid, logoutVisible, loginVisible };
 }
 
 export async function inspectLoginPage(page, provider) {
-  const signals = { trusted: false, logoutVisible: false, loginVisible: false, passwordVisible: false, blocked: false };
+  const signals = { trusted: false, logoutVisible: false, loginVisible: false, passwordVisible: false, blocked: false, netFunnelInvalid: false };
   const pageUrl = page.url();
   if (/^https:\/\/cdn-botmanager\.stclab\.com\//.test(page.url())) return { ...signals, blocked: true };
-  if (!allowedUrl(page.url(), provider, true)) return signals;
+  if (!allowedBookingUrl(page.url(), provider, true)) return signals;
   for (const frame of page.frames()) {
-    if (!allowedUrl(frame.url(), provider, true)) continue;
+    if (!allowedBookingUrl(frame.url(), provider, true)) continue;
     try {
       if (frame.parentFrame?.() && !await (await frame.frameElement()).isVisible()) continue;
       const frameUrl = frame.url();
@@ -36,19 +50,21 @@ export async function inspectLoginPage(page, provider) {
       signals.trusted ||= trusted;
       signals.passwordVisible ||= observed.passwordVisible;
       signals.blocked ||= observed.blocked;
-      signals.loginVisible ||= trusted && observed.loginVisible;
+      signals.netFunnelInvalid ||= observed.netFunnelInvalid;
+      signals.loginVisible ||= observed.loginVisible;
     } catch { /* A navigating frame cannot supply login evidence. */ }
   }
   return signals;
 }
 
 export class BrowserManager {
-  constructor({ driver = chromium, dataDir = join(process.env.LOCALAPPDATA || homedir(), 'TicketAssistant', 'profiles'), emit = () => {}, settleMs = 4000 } = {}) {
-    Object.assign(this, { driver, dataDir, emit, settleMs });
+  constructor({ driver = chromium, dataDir = join(process.env.LOCALAPPDATA || homedir(), 'TicketAssistant', 'profiles'), emit = () => {}, settleMs = 4000, browserExecutable = findSystemChrome() } = {}) {
+    Object.assign(this, { driver, dataDir, emit, settleMs, browserExecutable });
     this.sessions = new Map();
     this.opening = new Map();
     this.checking = new Map();
     this.states = new Map();
+    this.closed = false;
   }
 
   setState(id, patch) {
@@ -61,11 +77,57 @@ export class BrowserManager {
 
   snapshot() { return Object.fromEntries(this.states); }
 
+  queueCheck(id, session) {
+    clearTimeout(session.eventTimer);
+    session.eventTimer = setTimeout(async () => {
+      try {
+        // A navigation can happen during an inspection. Read the new page after
+        // that inspection finishes, rather than returning its outdated result.
+        const pending = this.checking.get(id);
+        if (pending) await pending.task;
+        if (this.sessions.get(id) === session && !session.suspended) await this.check(id);
+      } catch { /* The periodic check will retry a closing or navigating page. */ }
+    }, 150);
+    session.eventTimer.unref?.();
+  }
+
   watch(id, session, page) {
-    session.observedPage = page;
+    const observe = () => {
+      if (!allowedUrl(page.url(), session.provider, true)) return;
+      if (id === 'nol') session.loginEvidence?.delete(page);
+      session.observedPage = page;
+      if (!allowedUrl(page.url(), session.provider)) session.freshAt = null;
+      this.queueCheck(id, session);
+    };
+    observe();
     page.on('framenavigated', frame => {
-      if (frame === page.mainFrame() && allowedUrl(page.url(), session.provider, true)) session.observedPage = page;
+      if (frame === page.mainFrame()) observe();
     });
+    if (id === 'nol') page.on('response', response => {
+      this.captureNolLoginEvidence(id, session, page, response).catch(() => {});
+    });
+    page.on('close', () => {
+      if (session.observedPage !== page) return;
+      session.observedPage = null;
+      // SSO popups can close without reloading their opener. Refresh the official
+      // verification page before accepting any older tab's login display.
+      session.refreshNeeded = true;
+      session.freshAt = null;
+      this.queueCheck(id, session);
+    });
+  }
+
+  async captureNolLoginEvidence(id, session, page, response) {
+    let url;
+    try { url = new URL(response.url()); } catch { return; }
+    if (url.origin !== 'https://nol.yanolja.com' || url.pathname !== '/api/v2/member-site/mypage/home/v2' || response.status() < 200 || response.status() >= 300) return;
+    const payload = await response.json();
+    if (typeof payload?.isLogin !== 'boolean' || this.sessions.get(id) !== session || page.isClosed()) return;
+    // Retain only the official Boolean login result. User fields in the response,
+    // credentials, input values and cookies are never stored or emitted.
+    session.loginEvidence ||= new WeakMap();
+    session.loginEvidence.set(page, { authenticated: payload.isLogin, pageUrl: page.url() });
+    if (!session.suspended) this.queueCheck(id, session);
   }
 
   poll(id, session) {
@@ -76,6 +138,7 @@ export class BrowserManager {
 
   async open(id) {
     getProvider(id);
+    if (this.closed) return this.setState(id, { status: 'closed', origin: '', detail: '프로그램이 종료되어 브라우저 연결을 중지했습니다.' });
     if (this.opening.has(id)) return this.opening.get(id);
     const operation = this.openInternal(id).finally(() => this.opening.delete(id));
     this.opening.set(id, operation);
@@ -87,16 +150,32 @@ export class BrowserManager {
     let session = this.sessions.get(id);
     try {
       if (!session?.context.pages().some(p => !p.isClosed())) {
+        if (session) {
+          clearInterval(session.timer);
+          clearTimeout(session.eventTimer);
+          this.sessions.delete(id);
+          const previous = session;
+          session = null;
+          await previous.context.close();
+        }
         this.setState(id, { status: 'opening', origin: '', detail: '공식 티켓처의 로그인 상태를 확인합니다.' });
         const profile = join(this.dataDir, id);
         await mkdir(profile, { recursive: true });
-        const context = await this.driver.launchPersistentContext(profile, { headless: false, viewport: null, locale: 'ko-KR', timezoneId: 'Asia/Seoul', args: ['--start-maximized'] });
+        if (this.closed) return this.setState(id, { status: 'closed', origin: '', detail: '프로그램이 종료되어 브라우저 연결을 중지했습니다.' });
+        const launchOptions = { headless: false, viewport: null, locale: 'ko-KR', timezoneId: 'Asia/Seoul', args: ['--start-maximized'] };
+        if (this.browserExecutable) launchOptions.executablePath = this.browserExecutable;
+        const context = await this.driver.launchPersistentContext(profile, launchOptions);
+        if (this.closed) {
+          await context.close();
+          return this.setState(id, { status: 'closed', origin: '', detail: '프로그램이 종료되어 브라우저 연결을 중지했습니다.' });
+        }
         context.setDefaultTimeout(4000);
-        session = { context, provider, timer: null, suspended: false };
+        session = { context, provider, timer: null, suspended: false, loginEvidence: new WeakMap() };
         this.sessions.set(id, session);
         const owned = session;
         context.on('close', () => {
           clearInterval(owned.timer);
+          clearTimeout(owned.eventTimer);
           if (this.sessions.get(id) !== owned) return;
           this.sessions.delete(id);
           this.setState(id, { status: 'closed', origin: '', detail: '브라우저가 닫혔습니다. 티켓처를 다시 연결해주세요.' });
@@ -115,7 +194,7 @@ export class BrowserManager {
           for (let i = 0; i < Math.min(count, 4); i++) {
             if (!await login.nth(i).isVisible()) continue;
             await login.nth(i).click({ timeout: 3000 });
-            return this.check(id);
+            return this.check(id, { settle: true });
           }
         }
       }
@@ -131,11 +210,11 @@ export class BrowserManager {
     getProvider(id);
     const pending = this.checking.get(id);
     if (pending) {
-      if (!options.fresh || pending.fresh) return pending.task;
+      if ((!options.fresh || pending.fresh) && (!options.settle || pending.settle)) return pending.task;
       await pending.task;
       return this.check(id, options);
     }
-    const entry = { fresh: Boolean(options.fresh) };
+    const entry = { fresh: Boolean(options.fresh), settle: Boolean(options.fresh || options.settle) };
     entry.task = this.checkInternal(id, options).finally(() => {
       if (this.checking.get(id) === entry) this.checking.delete(id);
     });
@@ -143,7 +222,7 @@ export class BrowserManager {
     return entry.task;
   }
 
-  async checkInternal(id, { fresh = false, maxAgeMs = 0 } = {}) {
+  async checkInternal(id, { fresh = false, maxAgeMs = 0, settle = false } = {}) {
     const provider = getProvider(id);
     const session = this.sessions.get(id);
     if (!session) return this.states.get(id) || { status: 'idle', detail: '티켓처를 선택해주세요.' };
@@ -151,27 +230,37 @@ export class BrowserManager {
     const pages = session.context.pages().filter(p => !p.isClosed());
     if (!pages.length) return commit({ status: 'closed', detail: '열린 티켓처 창이 없습니다.' });
     try {
-      let page = session.observedPage && !session.observedPage.isClosed() ? session.observedPage : pages.at(-1);
+      if (session.observedPage?.isClosed()) {
+        session.observedPage = null;
+        session.refreshNeeded = true;
+        session.freshAt = null;
+      }
+      let page = session.observedPage || pages.at(-1);
       const recent = session.verificationPage === page && session.freshAt && Date.now() - session.freshAt <= maxAgeMs;
-      if (fresh && !recent) {
+      const refresh = session.refreshNeeded || (fresh && !recent);
+      if (refresh) {
         commit({ status: 'checking', detail: '공식 사이트를 새로 열어 로그인 유효 여부를 확인합니다.' });
-        page = session.verificationPage && !session.verificationPage.isClosed() ? session.verificationPage : await session.context.newPage();
+        page = session.verificationPage && !session.verificationPage.isClosed() ? session.verificationPage : pages.find(p => p.url() === 'about:blank') || await session.context.newPage();
         session.verificationPage = page;
         session.observedPage = page;
         session.freshAt = null;
+        session.refreshNeeded = false;
         const response = await page.goto(provider.account || provider.home, { waitUntil: 'domcontentloaded', timeout: 30000 });
         if (response && response.status() >= 400) throw new Error('공식 사이트가 HTTP ' + response.status() + ' 응답을 반환했습니다.');
         session.freshAt = Date.now();
       }
-      const deadline = Date.now() + (fresh ? this.settleMs : 0);
+      const deadline = Date.now() + (fresh || refresh || settle ? this.settleMs : 0);
       let result;
       do {
-        result = classifyLogin(await inspectLoginPage(page, provider));
+        const signals = await inspectLoginPage(page, provider);
+        const evidence = session.loginEvidence?.get(page);
+        if (provider.id === 'nol' && evidence?.pageUrl === page.url()) signals.sessionAuthenticated = evidence.authenticated;
+        result = classifyLogin(signals);
         if (result.status !== 'unknown' || Date.now() >= deadline || page.isClosed() || this.sessions.get(id) !== session) break;
         await wait(250);
       } while (true);
       if (page.isClosed()) return commit({ status: 'unknown', detail: '확인하던 창이 닫혔습니다. 열린 로그인 창에서 다시 확인해주세요.' });
-      if (session.observedPage && session.observedPage !== page) return commit({ status: 'checking', detail: '이동한 로그인 화면을 확인하고 있습니다.' });
+      if (session.observedPage && !session.observedPage.isClosed() && session.observedPage !== page) return commit({ status: 'checking', detail: '이동한 로그인 화면을 확인하고 있습니다.' });
       const origin = allowedUrl(page.url(), provider, true) ? new URL(page.url()).origin : '';
       return commit({ ...result, origin, verifiedAt: result.status === 'verified' ? new Date().toISOString() : null, refreshedAt: session.freshAt ? new Date(session.freshAt).toISOString() : null });
     } catch (error) {
@@ -190,6 +279,11 @@ export class BrowserManager {
   }
 
   async close() {
-    await Promise.allSettled([...this.sessions.values()].map(s => { clearInterval(s.timer); return s.context.close(); }));
+    this.closed = true;
+    if (!this.closing) this.closing = (async () => {
+      await Promise.allSettled([...this.sessions.values()].map(s => { clearInterval(s.timer); clearTimeout(s.eventTimer); return s.context.close(); }));
+      await Promise.allSettled([...this.opening.values()]);
+    })();
+    return this.closing;
   }
 }

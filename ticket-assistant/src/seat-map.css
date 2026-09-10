@@ -1,0 +1,42 @@
+.seat-map-intro,.seat-map-caption { font-size: 12px; line-height: 1.8; color: #697581; }
+.provider-seat-map { border: 1px solid #dce3e8; border-radius: 12px; padding: 16px; margin: 16px 0; background: #fff; }
+.seat-map-heading { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.seat-map-heading strong { font-size: 14px; color: #36464f; }
+.seat-map-heading span { display: block; font-size: 11px; margin-top: 7px; color: #76838b; }
+.seat-map-heading b { font-size: 12px; color: #4f784b; white-space: nowrap; }
+.seat-map-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.venue-picker { flex: 1; min-width: 230px; }
+.venue-picker select { width: 100%; height: 36px; border: 1px solid #dce3e8; border-radius: 7px; padding: 0 10px; background: #fff; color: #4c5962; font-size: 12px; }
+.seat-map-empty,.seat-map-message { background: #f5f7f8; border-radius: 8px; padding: 16px; font-size: 12px; line-height: 1.8; color: #6f7b85; }
+.seat-map-message p { margin-top: 0; }
+.venue-map-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid #dfe7da; border-radius: 9px; background: #f7faf5; color: #617158; }
+.venue-map-meta>div,.venue-map-meta a { display: flex; align-items: center; gap: 8px; }
+.venue-map-meta strong,.venue-map-meta small { display: block; }.venue-map-meta strong { font-size: 12px; }.venue-map-meta small { margin-top: 3px; font-size: 10px; color: #7b8875; }
+.venue-map-meta a { color: #5d7552; font-size: 11px; text-decoration: none; white-space: nowrap; }
+.venue-map-note { margin: 8px 2px 2px; color: #7b858d; font-size: 11px; line-height: 1.7; }
+.seat-map-toolbar { display: flex; flex-wrap: wrap; gap: 16px; padding: 10px 0; }
+.seat-map-toolbar label { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.seat-map-toolbar select { max-width: 210px; border: 1px solid #dce3e8; border-radius: 6px; padding: 7px; background: white; }
+.seat-map-toolbar input { max-width: 100px; }
+.floor-tabs { display: flex; gap: 5px; flex: 1; }
+.floor-tabs button { border: 1px solid #dce3e8; border-radius: 6px; padding: 7px 13px; background: #fff; color: #6d7780; cursor: pointer; font-size: 11px; }
+.floor-tabs button[aria-selected=true] { border-color: #6f8a63; background: #e8efe4; color: #3f5f35; font-weight: 700; }
+.seat-map-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 10px; color: #6b7781; margin: 10px 0; }
+.seat-map-legend span { display: flex; align-items: center; gap: 5px; }
+.seat-legend { display: inline-block; width: 10px; height: 10px; background: #d7e7d1; border: 1px solid #8ca681; border-radius: 2px; }
+.seat-legend.selected { background: #628452; }.seat-legend.unavailable { background: #e4e6e9; border-color: #bec5ca; }
+.seat-diagram-scroll { max-height: 520px; overflow: auto; background: #f8fafb; border: 1px solid #e3e8eb; border-radius: 8px; margin: 12px 0; }
+.seat-diagram { display: block; min-width: 280px; max-width: none; }
+.venue-diagram { min-height: 240px; }
+.diagram-stage { fill: #424b50; }.diagram-stage-label { fill: #fff; font-weight: 700; font-size: 15px; }.diagram-section-label { fill: #718078; font-size: 11px; font-weight: 700; }.diagram-row-label { fill: #68766c; font-size: 8px; font-weight: 700; pointer-events: none; }
+.diagram-seat { cursor: pointer; outline: none; }.diagram-seat rect { fill: #d7e7d1; stroke: #8ca681; stroke-width: 0.8; }
+.diagram-seat text { fill: #30402b; pointer-events: none; }.diagram-seat.unavailable rect { fill: #e4e6e9; stroke: #bec5ca; }
+.diagram-seat.chosen rect { fill: #628452; stroke: #355c29; }.diagram-seat.chosen text { fill: white; }
+.diagram-seat:focus rect,.diagram-seat:hover rect { stroke: #204c94; stroke-width: 2; }
+.seat-group-actions { margin-top: 14px; }.seat-group-actions strong { font-size: 11px; color: #65735d; }
+.seat-group-actions>div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-height: 150px; overflow: auto; }
+.seat-group-actions button,.chosen-seats button { border: 1px solid #dce4d7; border-radius: 6px; padding: 6px 10px; background: #fff; font-size: 11px; color: #617158; cursor: pointer; }
+.seat-group-actions button[aria-pressed=true] { background: #e4eddf; border-color: #829d71; }
+.chosen-seats { background: #f4f8f1; padding: 12px; border-radius: 8px; margin-top: 12px; }.chosen-seats>div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.chosen-seats strong { font-size: 11px; }.chosen-seats p { font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.seat-map-error { font-size: 12px; color: #af482a; }.manual-seat-settings { margin: 16px 0; }.manual-seat-settings summary { font-size: 12px; cursor: pointer; color: #748069; margin-bottom: 12px; }
+@media(max-width:700px) { .provider-seat-map { padding: 12px; }.seat-map-toolbar { gap: 8px; }.seat-map-toolbar label { font-size: 11px; }.seat-diagram-scroll { max-height: 380px; }.venue-map-meta { align-items: flex-start; }.venue-map-meta a { font-size: 10px; }.floor-tabs { min-width: 100%; }.floor-tabs button { flex: 1; padding-inline: 7px; } }
