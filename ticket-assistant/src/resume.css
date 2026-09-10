@@ -1,0 +1,5 @@
+.job-content { flex: 1; min-width: 0; }
+.resume-controls { margin-top: 14px; padding: 14px; border: 1px solid #e1d8f2; border-radius: 10px; background: #faf8ff; }
+.resume-controls > p { margin: 0 0 12px; }
+.resume-controls .field { margin-bottom: 12px; max-width: 320px; }
+@media (max-width: 600px) { .job { flex-wrap: wrap; } .job-content { flex-basis: calc(100% - 56px); } .resume-controls .button { width: 100%; } }

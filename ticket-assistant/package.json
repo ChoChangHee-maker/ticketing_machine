@@ -1,0 +1,24 @@
+{
+  "name": "ticket-assistant",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "browser:install": "playwright install chromium",
+    "probe": "node scripts/probe.mjs"
+  },
+  "dependencies": {
+    "express": "5.2.1",
+    "lucide-react": "1.31.0",
+    "playwright": "1.63.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": { "@vitejs/plugin-react": "6.1.1", "vite": "8.2.2" }
+}
