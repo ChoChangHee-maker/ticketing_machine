@@ -26,17 +26,24 @@ export function readLoginSignals() {
   const bodyText = document.body?.innerText || '';
   const address = typeof location === 'undefined' ? '' : location.href;
   const blocked = [...document.querySelectorAll('input[id*="captcha" i],input[name*="captcha" i],iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="challenges.cloudflare.com"],input[placeholder*="보안문자"],input[aria-label*="보안문자"],input[placeholder*="대소문자"][placeholder*="문자"]')].some(visible);
+  const accessRestricted = /비정상적인\s*접근으로\s*일시적으로\s*서비스\s*접속이\s*제한/.test(bodyText)
+    || /restricted\s+access\s+to\s+service/i.test(bodyText) && /policy\s+violations|code:\s*12/i.test(bodyText);
   const netFunnelInvalid = /facility\.ticketlink\.co\.kr\/error\/popup\/none/i.test(address) && /error\.netfunnel\.invalid\.key/i.test(address)
     || /비정상적인\s*접근으로\s*이용이\s*일시\s*제한/.test(bodyText) && /정상적인\s*방법으로\s*예매/.test(bodyText);
   const logoutVisible = names.some(name => /^(로그아웃|logout|signout)$/.test(name)) || controls.some(el => /logout|logoff/i.test(el.getAttribute('href') || '') && !/로그인/.test(el.textContent || ''));
   const loginVisible = names.some(name => /^(로그인|login|signin|로그인하기|회원로그인|로그인또는회원가입하기|카카오계정로그인|카카오qr코드로그인|멜론아이디로그인)$/.test(name));
-  return { passwordVisible, blocked, netFunnelInvalid, logoutVisible, loginVisible };
+  return { passwordVisible, blocked, accessRestricted, netFunnelInvalid, logoutVisible, loginVisible };
 }
 
 export async function inspectLoginPage(page, provider) {
-  const signals = { trusted: false, logoutVisible: false, loginVisible: false, passwordVisible: false, blocked: false, netFunnelInvalid: false };
+  const signals = { trusted: false, logoutVisible: false, loginVisible: false, passwordVisible: false, blocked: false, accessRestricted: false, netFunnelInvalid: false };
   const pageUrl = page.url();
-  if (/^https:\/\/cdn-botmanager\.stclab\.com\//.test(page.url())) return { ...signals, blocked: true };
+  if (/^https:\/\/cdn-botmanager\.stclab\.com\//.test(page.url())) {
+    try {
+      const observed = await page.evaluate(readLoginSignals);
+      return { ...signals, blocked: !observed.accessRestricted, accessRestricted: observed.accessRestricted };
+    } catch { return { ...signals, blocked: true }; }
+  }
   if (!allowedBookingUrl(page.url(), provider, true)) return signals;
   for (const frame of page.frames()) {
     if (!allowedBookingUrl(frame.url(), provider, true)) continue;
@@ -50,6 +57,7 @@ export async function inspectLoginPage(page, provider) {
       signals.trusted ||= trusted;
       signals.passwordVisible ||= observed.passwordVisible;
       signals.blocked ||= observed.blocked;
+      signals.accessRestricted ||= observed.accessRestricted;
       signals.netFunnelInvalid ||= observed.netFunnelInvalid;
       signals.loginVisible ||= observed.loginVisible;
     } catch { /* A navigating frame cannot supply login evidence. */ }
@@ -94,7 +102,6 @@ export class BrowserManager {
   watch(id, session, page) {
     const observe = () => {
       if (!allowedUrl(page.url(), session.provider, true)) return;
-      if (id === 'nol') session.loginEvidence?.delete(page);
       session.observedPage = page;
       if (!allowedUrl(page.url(), session.provider)) session.freshAt = null;
       this.queueCheck(id, session);
@@ -127,6 +134,7 @@ export class BrowserManager {
     // credentials, input values and cookies are never stored or emitted.
     session.loginEvidence ||= new WeakMap();
     session.loginEvidence.set(page, { authenticated: payload.isLogin, pageUrl: page.url() });
+    session.nolAuthentication = { authenticated: payload.isLogin, checkedAt: Date.now() };
     if (!session.suspended) this.queueCheck(id, session);
   }
 
@@ -170,7 +178,7 @@ export class BrowserManager {
           return this.setState(id, { status: 'closed', origin: '', detail: '프로그램이 종료되어 브라우저 연결을 중지했습니다.' });
         }
         context.setDefaultTimeout(4000);
-        session = { context, provider, timer: null, suspended: false, loginEvidence: new WeakMap() };
+        session = { context, provider, timer: null, suspended: false, loginEvidence: new WeakMap(), nolAuthentication: null };
         this.sessions.set(id, session);
         const owned = session;
         context.on('close', () => {
@@ -240,6 +248,7 @@ export class BrowserManager {
       const refresh = session.refreshNeeded || (fresh && !recent);
       if (refresh) {
         commit({ status: 'checking', detail: '공식 사이트를 새로 열어 로그인 유효 여부를 확인합니다.' });
+        if (provider.id === 'nol') session.nolAuthentication = null;
         page = session.verificationPage && !session.verificationPage.isClosed() ? session.verificationPage : pages.find(p => p.url() === 'about:blank') || await session.context.newPage();
         session.verificationPage = page;
         session.observedPage = page;
@@ -254,7 +263,10 @@ export class BrowserManager {
       do {
         const signals = await inspectLoginPage(page, provider);
         const evidence = session.loginEvidence?.get(page);
-        if (provider.id === 'nol' && evidence?.pageUrl === page.url()) signals.sessionAuthenticated = evidence.authenticated;
+        if (provider.id === 'nol' && allowedUrl(page.url(), provider)) {
+          if (evidence?.pageUrl === page.url()) signals.sessionAuthenticated = evidence.authenticated;
+          else if (typeof session.nolAuthentication?.authenticated === 'boolean') signals.sessionAuthenticated = session.nolAuthentication.authenticated;
+        }
         result = classifyLogin(signals);
         if (result.status !== 'unknown' || Date.now() >= deadline || page.isClosed() || this.sessions.get(id) !== session) break;
         await wait(250);

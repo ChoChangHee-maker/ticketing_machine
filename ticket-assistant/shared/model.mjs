@@ -69,6 +69,7 @@ export function validateProfile(profile) {
 }
 
 export function classifyLogin(signals) {
+  if (signals.accessRestricted) return { status: 'restricted', detail: '티켓처가 전용 브라우저의 접속을 제한했습니다. 일반 브라우저에서 직접 접속해주세요.' };
   if (signals.blocked) return { status: 'challenge', detail: '보안 확인 또는 대기 화면입니다. 브라우저에서 직접 진행해주세요.' };
   if (signals.sessionAuthenticated === false || signals.passwordVisible || signals.loginVisible) return { status: 'required', detail: '로그인이 필요한 화면입니다. 열린 브라우저에서 직접 로그인해주세요.' };
   if (signals.sessionAuthenticated === true && signals.trusted) return { status: 'verified', detail: '공식 NOL 마이페이지의 로그인 세션 응답을 확인했습니다.' };

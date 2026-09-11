@@ -27,6 +27,9 @@ test('보안 확인과 비밀번호 입력 화면은 이전 로그아웃 표시�
   assert.equal(classifyLogin({ trusted: true, logoutVisible: true, blocked: true }).status, 'challenge');
   assert.equal(classifyLogin({ trusted: true, sessionAuthenticated: true, loginVisible: true }).status, 'required');
 });
+test('티켓처의 접근 제한 화면은 로그인 필요와 구분한다', () => {
+  assert.equal(classifyLogin({ accessRestricted: true, loginVisible: true }).status, 'restricted');
+});
 test('URL 없이 설정을 저장할 수 있지만 실제 실행은 거부한다', () => {
   const draft = { ...defaultPreferences(), selected: ['melon', 'yes24'], zones: '1층 A구역' };
   assert.deepEqual(validatePreferences(draft).selected, ['melon', 'yes24']);

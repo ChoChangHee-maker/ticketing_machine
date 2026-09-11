@@ -183,12 +183,27 @@ test('NOL 마이페이지 응답에서는 로그인 여부만 보관해 성공�
   assert.equal(JSON.stringify(session.loginEvidence.get(current)).includes('private-test-value'), false);
   session.suspended = false;
   assert.equal((await manager.check('nol')).status, 'verified');
+  current.address = 'https://nol.yanolja.com/';
+  current.dispatch('framenavigated', current);
+  clearTimeout(session.eventTimer);
+  assert.equal((await manager.check('nol')).status, 'verified');
   session.suspended = true;
   current.dispatch('response', response(false));
   await new Promise(resolve => setImmediate(resolve));
   session.suspended = false;
   assert.equal((await manager.check('nol')).status, 'required');
   clearTimeout(session.eventTimer);
+});
+
+test('NOL 새로 확인은 이전 세션 응답을 버리고 마이페이지 응답을 다시 요구한다', async () => {
+  const current = page({}, 'https://nol.yanolja.com/');
+  const { manager, session } = managerFor([current], 'nol');
+  session.observedPage = current;
+  session.verificationPage = current;
+  session.nolAuthentication = { authenticated: true, checkedAt: Date.now() };
+  assert.equal((await manager.check('nol')).status, 'verified');
+  assert.equal((await manager.check('nol', { fresh: true })).status, 'unknown');
+  assert.equal(session.nolAuthentication, null);
 });
 
 test('TicketLINK의 유효하지 않은 NetFunnel 키 화면을 별도로 감지한다', () => {
@@ -198,6 +213,22 @@ test('TicketLINK의 유효하지 않은 NetFunnel 키 화면을 별도로 감지
     getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
   });
   assert.equal(signals.netFunnelInvalid, true);
+});
+
+test('YES24 Code 12 접근 제한 화면을 로그인이나 보안문자로 오인하지 않는다', () => {
+  const signals = runInNewContext('(' + readLoginSignals.toString() + ')()', {
+    location: { href: 'https://ticket.yes24.com/' },
+    document: { body: { innerText: '비정상적인 접근으로 일시적으로 서비스 접속이 제한 되었습니다. Restricted access to service. your access has been restricted due to policy violations. Code: 12' }, querySelectorAll: () => [] },
+    getComputedStyle: () => ({ visibility: 'visible', display: 'block' }),
+  });
+  assert.equal(signals.accessRestricted, true);
+});
+
+test('YES24 보안업체 주소의 Code 12 본문을 접근 제한으로 판정한다', async () => {
+  const restricted = page({}, 'https://cdn-botmanager.stclab.com/block');
+  restricted.evaluate = async () => ({ accessRestricted: true });
+  const { manager } = managerFor([restricted], 'yes24');
+  assert.equal((await manager.check('yes24')).status, 'restricted');
 });
 
 test('로그인 이동 뒤 늦게 그려지는 인증 버튼을 새로고침 없이 기다린다', async () => {

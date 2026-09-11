@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import './resume.css';
+import './status.css';
 import { Activity, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronRight, CircleHelp, Clock3, ExternalLink, Globe2, Layers3, Link2, LoaderCircle, LogIn, Monitor, Pause, Play, Plus, RefreshCw, Save, Settings2, ShieldCheck, Ticket, X, Minus } from 'lucide-react';
 import { PROVIDERS, LOGIN_LABELS } from '../shared/providers.mjs';
 import { defaultPreferences, validatePreferences, splitPreferences, ACTIVE_RUN_STATES, PHASE_LABELS } from '../shared/model.mjs';

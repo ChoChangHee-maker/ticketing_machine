@@ -1,1 +1,1 @@
-export const API_REVISION = 'login-queue-2';
+export const API_REVISION = 'provider-auth-4';

@@ -27,4 +27,4 @@ export function allowedBookingUrl(value, provider, includeAuth = false) {
   } catch { return false; }
 }
 
-export const LOGIN_LABELS = { idle: '선택 안 함', opening: '브라우저 연결 중', checking: '로그인 확인 중', required: '직접 로그인 필요', verified: '로그인 확인됨', unknown: '로그인 판별 필요', challenge: '보안 확인 필요', error: '접속 확인 실패', closed: '브라우저 닫힘' };
+export const LOGIN_LABELS = { idle: '선택 안 함', opening: '브라우저 연결 중', checking: '로그인 확인 중', required: '직접 로그인 필요', verified: '로그인 확인됨', unknown: '로그인 판별 필요', challenge: '보안 확인 필요', restricted: '접근 제한됨', error: '접속 확인 실패', closed: '브라우저 닫힘' };
