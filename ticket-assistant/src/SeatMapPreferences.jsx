@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ExternalLink, LoaderCircle, MapPin, Search } from 'lucide-react';
+import { CheckCircle2, ExternalLink, LoaderCircle, MapPin, Search } from 'lucide-react';
 import { matchingPreference, seatKey } from '../shared/seat-map.mjs';
 import { VENUES } from '../shared/venues.mjs';
 import './seat-map.css';
@@ -27,6 +27,11 @@ function ProviderVenueMap({ provider, config, busy, connected, supported, locked
   const reading = busy['inspect-' + id];
   const rowGroups = floor ? [...new Map(floor.seats.map(seat => [`${seat.zone}\u0000${seat.row}`, { zone: seat.zone, row: seat.row }])).values()] : [];
 
+  function checkedTime(value) {
+    if (!value) return '';
+    return new Intl.DateTimeFormat('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(value));
+  }
+
   function choose(items) {
     const allSelected = items.every(seat => selectedKeys.has(seatKey(seat)));
     const keys = new Set(items.map(seatKey));
@@ -44,9 +49,13 @@ function ProviderVenueMap({ provider, config, busy, connected, supported, locked
   return <article className="provider-seat-map">
     <div className="seat-map-heading"><div><strong>{provider.name}{venue ? ` · ${venue.name}` : ''}</strong><span>{info?.title || config.title || '선택한 공연'}{info?.venue && info.venue !== venue?.name ? ` · 확인된 공연장: ${info.venue}` : ''}</span></div><b>{chosen.length}석 선호</b></div>
     <div className="seat-map-actions">
-      <button type="button" className="button secondary" disabled={locked || !connected || !supported || reading || !config.urls[id]} onClick={() => onInspect(id)}>{reading ? <LoaderCircle size={14} className="spin" /> : <Search size={14} />} 공연장에서 좌석도 찾기</button>
-      <label className="venue-picker"><span className="sr-only">{provider.name} 공연장 직접 선택</span><select disabled={locked} value={venueId} onChange={event => onVenueChange(id, event.target.value)}><option value="">공연장을 직접 선택하세요</option>{VENUES.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
+      <button type="button" className="button secondary" disabled={locked || !connected || !supported || reading || !config.urls[id]} onClick={() => onInspect(id)}>{reading ? <LoaderCircle size={14} className="spin" /> : <Search size={14} />} {info ? '공연 정보 다시 확인' : '공연 정보 확인'}</button>
+      <label className="venue-picker"><span className="sr-only">{provider.name} 공연장 직접 선택</span><select disabled={locked || reading} value={venueId} onChange={event => onVenueChange(id, event.target.value)}><option value="">공연장을 직접 선택하세요</option>{VENUES.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
     </div>
+    {info && <div className={`performance-proof ${info.complete ? 'complete' : 'partial'}`} role="status">
+      <div className="performance-proof-title"><CheckCircle2 size={17} /><span><strong>{info.complete ? '공연 정보 확인 완료' : '공연 정보 일부 확인'}</strong><small>{info.provider || provider.name} 공식 페이지에서 읽었습니다.</small></span></div>
+      <dl><div><dt>작품</dt><dd>{info.title || '작품명을 찾지 못했습니다.'}</dd></div><div><dt>공연장</dt><dd>{info.venue || '공연장을 찾지 못했습니다.'}</dd></div><div><dt>확인 주소</dt><dd><a href={info.finalUrl || info.url} target="_blank" rel="noreferrer">{info.host || info.finalUrl || info.url} <ExternalLink size={11} /></a></dd></div><div><dt>확인 시각</dt><dd>{checkedTime(info.checkedAt)}</dd></div></dl>
+    </div>}
     {connected && !supported && <div className="seat-map-message" role="alert"><p>이 기능이 포함된 새 서버가 필요합니다. 기존 실행 창을 닫고 프로그램을 다시 시작해주세요.</p></div>}
     {info && !info.venueId && <div className="seat-map-message" role="status"><p>{info.venue ? `공연장은 “${info.venue}”로 확인했지만 등록된 좌석도가 없습니다.` : '공연 페이지에서 공연장 이름을 자동으로 찾지 못했습니다.'} 위 목록에서 공연장을 직접 선택할 수 있습니다.</p></div>}
     {!venue && <div className="seat-map-empty">공연 주소를 입력하고 ‘공연장에서 좌석도 찾기’를 누르거나 공연장을 직접 선택해주세요.</div>}

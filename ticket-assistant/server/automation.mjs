@@ -2,6 +2,7 @@ import { allowedUrl, allowedBookingUrl, getProvider } from '../shared/providers.
 import { validatePreferences, chooseSeats, parseSeat, splitPreferences, ACTIVE_RUN_STATES, PHASE_LABELS } from '../shared/model.mjs';
 import { inspectLoginPage } from './browser.mjs';
 import { melonSelectors, revealMelonDate } from './melon.mjs';
+import { nolSelectors, revealNolDate } from './nol.mjs';
 import { matchingPreference, mapKey, seatKey } from '../shared/seat-map.mjs';
 import { readPerformanceInfo } from './performance-info.mjs';
 
@@ -28,8 +29,8 @@ export function readSeatElements(elements) {
 }
 
 export class Runner {
-  constructor(browsers, emit = () => {}, { elementWaitMs = 6000, pollMs = 200, afterClickMs = 350 } = {}) {
-    Object.assign(this, { browsers, emit, elementWaitMs, pollMs, afterClickMs });
+  constructor(browsers, emit = () => {}, { elementWaitMs = 6000, pollMs = 200, afterClickMs = 350, prepareAheadMs = 5 * 60 * 1000 } = {}) {
+    Object.assign(this, { browsers, emit, elementWaitMs, pollMs, afterClickMs, prepareAheadMs });
     this.state = { status: 'idle', jobs: {}, winner: null, runId: 0 };
     this.stopped = false;
     this.generation = 0;
@@ -104,11 +105,35 @@ export class Runner {
 
   async execute(config, generation) {
     const at = config.scheduledAt ? Date.parse(config.scheduledAt + '+09:00') : Date.now();
-    for (const id of config.selected) this.update(id, at > Date.now() ? 'scheduled' : 'ready', at > Date.now() ? '지정한 실행 시간까지 대기합니다. (한국 시간)' : '예매 화면을 준비합니다.');
-    while (Date.now() < at) { this.guard(generation); await wait(Math.min(250, at - Date.now())); }
+    const scheduled = at > Date.now();
+    for (const id of config.selected) this.update(id, scheduled ? 'scheduled' : 'ready', scheduled ? '공연 화면을 미리 준비할 시간까지 대기합니다. (한국 시간)' : '예매 화면을 준비합니다.');
+    if (scheduled) {
+      const prepareAt = Math.max(Date.now(), at - this.prepareAheadMs);
+      while (Date.now() < prepareAt) { this.guard(generation); await wait(Math.min(250, prepareAt - Date.now())); }
+      this.guard(generation);
+      await Promise.allSettled(config.selected.map(id => this.runProvider(id, config, generation, false, { stopBefore: 'entry' })));
+      this.guard(generation);
+      this.state.status = 'scheduled';
+    }
+    while (Date.now() < at) { this.guard(generation); await wait(Math.min(100, at - Date.now())); }
     this.guard(generation);
     this.state.status = 'running';
-    await Promise.allSettled(config.selected.map(id => this.runProvider(id, config, generation)));
+    await Promise.allSettled(config.selected.map(async id => {
+      const context = this.contexts.get(id);
+      const canResume = Boolean(context && this.pages(id).length);
+      if (scheduled && canResume && !context.prepared && !this.state.jobs[id]?.blockedBy) {
+        const page = this.pages(id)[0];
+        try {
+          this.update(id, 'opening', '오픈 시각이 되어 공연 페이지를 한 번 갱신합니다.', { canResume: false, blockedBy: null });
+          const response = await page.goto(config.urls[id], { waitUntil: 'domcontentloaded', timeout: 30000 });
+          if (response && response.status() >= 400) throw new Error('공연 페이지가 HTTP ' + response.status() + ' 응답을 반환했습니다.');
+        } catch (error) {
+          this.update(id, this.stopped ? 'stopped' : 'waiting', error.message, { canResume: !this.stopped, resumeSteps: context.phases.slice(context.index), phase: context.phases[context.index], blockedBy: null });
+          return;
+        }
+      }
+      return this.runProvider(id, config, generation, canResume);
+    }));
     this.finish();
   }
 
@@ -316,7 +341,7 @@ export class Runner {
     throw new Error('조건에 맞는 좌석을 읽지 못했습니다. 좌석이 없거나 화면 연결이 필요합니다. 캔버스 좌석도는 직접 선택해주세요.');
   }
 
-  async runProvider(id, config, generation, resume = false) {
+  async runProvider(id, config, generation, resume = false, { stopBefore = '' } = {}) {
     const session = this.browsers.sessions.get(id);
     const profile = config.profiles[id] || {};
     let context = this.contexts.get(id);
@@ -344,7 +369,7 @@ export class Runner {
       }
       session.suspended = true;
       const compact = config.date.replaceAll('-', '');
-      const defaults = id === 'melon' ? melonSelectors(config) : {};
+      const defaults = id === 'melon' ? melonSelectors(config) : id === 'nol' ? nolSelectors(config) : {};
       const selectors = {
         entry: profile.entry ? [profile.entry] : defaults.entry || ['role=button[name="예매하기"s]', 'role=link[name="예매하기"s]', 'role=button[name="일반예매"s]'],
         date: profile.date ? [interpolate(profile.date, config)] : defaults.date || ['[data-date="' + config.date + '"]', '[data-date="' + compact + '"]', '[data-perfday="' + compact + '"]', '[aria-label="' + config.date + '"]'],
@@ -353,12 +378,26 @@ export class Runner {
       for (; context.index < context.phases.length; context.index++) {
         const phase = context.phases[context.index];
         this.guard(generation, id);
+        if (phase === stopBefore) {
+          context.prepared = true;
+          this.update(id, 'armed', '공연 페이지에서 날짜와 회차를 선택했습니다. 지정 시각에 예매하기부터 진행합니다.', { phase, canResume: false, blockedBy: null, preparedAt: new Date().toISOString() });
+          return;
+        }
         this.update(id, phase, PHASE_LABELS[phase] + ' 중입니다.', { phase, canResume: false, blockedBy: null });
         if (phase === 'zone' && this.state.mode === 'map') {
           const map = await this.captureSeatMap(id, config, generation);
           this.update(id, 'mapped', '좌석도를 읽었습니다. 예매 준비에서 선호 좌석을 선택해주세요.', { canResume: false, mapKey: map.key, capturedAt: map.capturedAt });
         } else if (phase === 'zone') await this.selectSeats(id, config, generation);
-        else await this.clickOne(id, selectors[phase], generation, false, id === 'melon' && phase === 'date' && !profile.date ? async () => revealMelonDate(await this.visibleFrames(id), config, () => this.guard(generation, id)) : null);
+        else {
+          const beforeDate = phase === 'date' && !profile.date
+            ? id === 'melon'
+              ? async () => revealMelonDate(await this.visibleFrames(id), config, () => this.guard(generation, id))
+              : id === 'nol'
+                ? async () => revealNolDate(await this.visibleFrames(id), config, () => this.guard(generation, id))
+                : null
+            : null;
+          await this.clickOne(id, selectors[phase], generation, false, beforeDate);
+        }
       }
     } catch (error) {
       const canResume = !this.stopped && !this.state.winner && context && this.pages(id).length > 0;

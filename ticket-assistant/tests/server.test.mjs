@@ -21,6 +21,7 @@ test('로컬 API가 토큰과 요청 출처를 검사하고 선택한 티켓처�
   assert.equal(boot.providers.length, 5);
   assert.equal(boot.capabilities.seatMaps, true);
   assert.equal(boot.capabilities.venueMaps, true);
+  assert.equal(boot.capabilities.schedules, true);
   assert.equal(typeof boot.revision, 'string');
   const request = (headers = {}, id = 'melon') => fetch(origin + '/api/providers/' + id + '/open', { method: 'POST', headers });
   assert.equal((await request()).status, 403);
@@ -87,6 +88,26 @@ test('공연장 찾기 API는 토큰을 검사하고 공개 공연 주소만 검
   assert.deepEqual(calls, [{ id: 'melon', url: body.url }]);
   runtime.runner.state.status = 'running';
   assert.equal((await post({ 'x-ticket-token': boot.token })).status, 409);
+});
+test('실제 회차 API는 선택한 티켓처, URL, 날짜를 연결된 브라우저에 전달한다', async t => {
+  const calls = [];
+  const browsers = {
+    sessions: new Map(), snapshot: () => ({}), close: async () => {},
+    schedule: async (id, input) => { calls.push({ id, ...input }); return { provider: id, date: input.date, sessions: [{ time: '14:00', casting: '테스트 배우' }] }; },
+  };
+  const runtime = createApp({ browsers, load: async () => defaultPreferences() });
+  const server = runtime.app.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  t.after(async () => { await runtime.close(); await new Promise(resolve => server.close(resolve)); });
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  const boot = await fetch(origin + '/api/bootstrap').then(response => response.json());
+  const body = { url: 'https://nol.yanolja.com/ticket/products/26009625', date: '2026-09-12' };
+  const response = await fetch(origin + '/api/providers/nol/performance/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-ticket-token': boot.token }, body: JSON.stringify(body) });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).sessions, [{ time: '14:00', casting: '테스트 배우' }]);
+  assert.deepEqual(calls, [{ id: 'nol', ...body }]);
+  runtime.runner.state.status = 'waiting';
+  assert.equal((await fetch(origin + '/api/providers/nol/performance/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-ticket-token': boot.token }, body: JSON.stringify(body) })).status, 409);
 });
 test('실제 로그인 확인 전에는 예매 실행이 시작되지 않는다', async () => {
   const runner = new Runner({ check: async () => ({ status: 'unknown' }) });

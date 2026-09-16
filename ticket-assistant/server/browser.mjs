@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { getProvider, allowedUrl, allowedBookingUrl } from '../shared/providers.mjs';
 import { classifyLogin } from '../shared/model.mjs';
+import { readPerformanceSchedule } from './schedule.mjs';
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -15,6 +16,21 @@ export function findSystemChrome(environment = process.env, exists = existsSync)
     environment.LOCALAPPDATA && join(environment.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
   ].filter(Boolean);
   return candidates.find(candidate => exists(candidate)) || '';
+}
+
+export function findSystemEdge(environment = process.env, exists = existsSync) {
+  const candidates = [
+    environment.PROGRAMFILES && join(environment.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    environment['PROGRAMFILES(X86)'] && join(environment['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    environment.LOCALAPPDATA && join(environment.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  ].filter(Boolean);
+  return candidates.find(candidate => exists(candidate)) || '';
+}
+
+export function findSystemBrowser(environment = process.env, exists = existsSync) {
+  const preferred = String(environment.TICKET_ASSISTANT_BROWSER || 'chrome').toLowerCase();
+  const finders = preferred === 'edge' ? [findSystemEdge, findSystemChrome] : [findSystemChrome, findSystemEdge];
+  return finders.map(find => find(environment, exists)).find(Boolean) || '';
 }
 
 export function readLoginSignals() {
@@ -66,7 +82,7 @@ export async function inspectLoginPage(page, provider) {
 }
 
 export class BrowserManager {
-  constructor({ driver = chromium, dataDir = join(process.env.LOCALAPPDATA || homedir(), 'TicketAssistant', 'profiles'), emit = () => {}, settleMs = 4000, browserExecutable = findSystemChrome() } = {}) {
+  constructor({ driver = chromium, dataDir = join(process.env.LOCALAPPDATA || homedir(), 'TicketAssistant', 'profiles'), emit = () => {}, settleMs = 4000, browserExecutable = findSystemBrowser() } = {}) {
     Object.assign(this, { driver, dataDir, emit, settleMs, browserExecutable });
     this.sessions = new Map();
     this.opening = new Map();
@@ -101,6 +117,7 @@ export class BrowserManager {
 
   watch(id, session, page) {
     const observe = () => {
+      if (session.transientPages?.has(page)) return;
       if (!allowedUrl(page.url(), session.provider, true)) return;
       session.observedPage = page;
       if (!allowedUrl(page.url(), session.provider)) session.freshAt = null;
@@ -114,6 +131,7 @@ export class BrowserManager {
       this.captureNolLoginEvidence(id, session, page, response).catch(() => {});
     });
     page.on('close', () => {
+      if (session.transientPages?.has(page)) return;
       if (session.observedPage !== page) return;
       session.observedPage = null;
       // SSO popups can close without reloading their opener. Refresh the official
@@ -171,6 +189,9 @@ export class BrowserManager {
         await mkdir(profile, { recursive: true });
         if (this.closed) return this.setState(id, { status: 'closed', origin: '', detail: '프로그램이 종료되어 브라우저 연결을 중지했습니다.' });
         const launchOptions = { headless: false, viewport: null, locale: 'ko-KR', timezoneId: 'Asia/Seoul', args: ['--start-maximized'] };
+        // Playwright adds --no-sandbox by default. Chrome warns about it and it is
+        // unnecessary on Windows, so run the installed browser without that flag.
+        if (process.platform === 'win32') launchOptions.ignoreDefaultArgs = ['--no-sandbox'];
         if (this.browserExecutable) launchOptions.executablePath = this.browserExecutable;
         const context = await this.driver.launchPersistentContext(profile, launchOptions);
         if (this.closed) {
@@ -178,7 +199,7 @@ export class BrowserManager {
           return this.setState(id, { status: 'closed', origin: '', detail: '프로그램이 종료되어 브라우저 연결을 중지했습니다.' });
         }
         context.setDefaultTimeout(4000);
-        session = { context, provider, timer: null, suspended: false, loginEvidence: new WeakMap(), nolAuthentication: null };
+        session = { context, provider, timer: null, suspended: false, loginEvidence: new WeakMap(), nolAuthentication: null, transientPages: new WeakSet() };
         this.sessions.set(id, session);
         const owned = session;
         context.on('close', () => {
@@ -288,6 +309,32 @@ export class BrowserManager {
     if (page) await page.bringToFront();
     else if (allowOpen) await this.open(id);
     else throw new Error('티켓처 창이 닫혔습니다. 실행을 중지하고 다시 연결해주세요.');
+  }
+
+  async schedule(id, { url, date } = {}) {
+    const provider = getProvider(id);
+    const address = typeof url === 'string' ? url.trim() : '';
+    if (!allowedUrl(address, provider)) throw new Error(`${provider.name}의 공식 공연 상세 URL을 입력해주세요.`);
+    const dateValue = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? Date.parse(date + 'T00:00:00Z') : Number.NaN;
+    if (!Number.isFinite(dateValue) || new Date(dateValue).toISOString().slice(0, 10) !== date) throw new Error('유효한 관람 날짜를 선택해주세요.');
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`${provider.name} 브라우저를 먼저 연결해주세요.`);
+    const previousSuspended = session.suspended;
+    session.suspended = true;
+    const page = await session.context.newPage();
+    session.transientPages ||= new WeakSet();
+    session.transientPages.add(page);
+    try {
+      const response = await page.goto(address, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      if (response && response.status() >= 400) throw new Error(`공식 공연 페이지가 HTTP ${response.status()} 응답을 반환했습니다.`);
+      const signals = await inspectLoginPage(page, provider);
+      if (signals.accessRestricted) throw new Error('티켓처가 현재 브라우저의 공연 페이지 접근을 제한했습니다.');
+      if (signals.blocked) throw new Error('공식 페이지의 보안 확인을 직접 완료한 뒤 회차를 다시 불러와주세요.');
+      return { provider: id, url: address, ...await readPerformanceSchedule({ page, id, date }) };
+    } finally {
+      try { await page.close(); } catch { /* A site-closed temporary tab needs no cleanup. */ }
+      session.suspended = previousSuspended;
+    }
   }
 
   async close() {

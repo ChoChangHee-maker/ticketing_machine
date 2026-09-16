@@ -45,7 +45,7 @@ export function createApp({ browsers: suppliedBrowsers, load = loadPreferences, 
     let settings = null;
     let settingsError = '';
     try { settings = await load(); } catch (error) { settingsError = error.message; }
-    res.json({ token, providers: PROVIDERS, settings, settingsError, revision: API_REVISION, capabilities: { seatMaps: true, venueMaps: true } });
+    res.json({ token, providers: PROVIDERS, settings, settingsError, revision: API_REVISION, capabilities: { seatMaps: true, venueMaps: true, schedules: true } });
   });
   app.get('/api/status', (_req, res) => res.json({ logins: browsers.snapshot(), run: runner.snapshot(), logs }));
   app.post('/api/settings', async (req, res) => { res.json(await save(req.body)); });
@@ -78,6 +78,11 @@ export function createApp({ browsers: suppliedBrowsers, load = loadPreferences, 
     getProvider(req.params.id);
     if (ACTIVE_RUN_STATES.includes(runner.state.status)) return res.status(409).json({ error: '실행 중에는 공연 설정을 바꿀 수 없습니다.' });
     res.json(await inspect({ id: req.params.id, url: req.body?.url }));
+  });
+  app.post('/api/providers/:id/performance/schedule', async (req, res) => {
+    getProvider(req.params.id);
+    if (ACTIVE_RUN_STATES.includes(runner.state.status)) return res.status(409).json({ error: '실행 중에는 공연 회차를 다시 불러올 수 없습니다.' });
+    res.json(await browsers.schedule(req.params.id, req.body));
   });
   app.post('/api/providers/:id/seat-map/refresh', async (req, res) => { res.json(await runner.refreshSeatMap(req.params.id)); });
   app.post('/api/stop', (_req, res) => { runner.stop(); res.json({ ok: true }); });

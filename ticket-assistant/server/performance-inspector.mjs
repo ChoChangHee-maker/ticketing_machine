@@ -22,10 +22,17 @@ function attribute(html, tagPattern, attributeName) {
   return decodeHtml(match?.[1]);
 }
 
+function cleanTitle(value) {
+  return String(value || '')
+    .replace(/^\(([^)]+)\)\s*-\s*(?:현재|예정)\s*공연(?:\s*\|.*)?$/i, '$1')
+    .replace(/\s*[|｜]\s*(?:예스24\s*티켓|YES24\s*TICKET|멜론\s*티켓|Melon\s*Ticket|NOL\s*티켓|샤롯데씨어터|세종문화회관).*$/i, '')
+    .trim();
+}
+
 function parseDetails(html) {
-  const title = attribute(html, 'meta(?=[^>]*property=["\']og:title["\'])', 'content')
+  const title = cleanTitle(attribute(html, 'meta(?=[^>]*property=["\']og:title["\'])', 'content')
     || attribute(html, 'meta(?=[^>]*name=["\']twitter:title["\'])', 'content')
-    || decodeHtml(html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]);
+    || decodeHtml(html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]));
   const candidates = [
     attribute(html, '(?:a|button)(?=[^>]*id=["\']performanceHallBtn["\'])', 'title'),
     decodeHtml(html.match(/<span\b[^>]*class=["'][^"']*\bplace\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i)?.[1]),
@@ -57,7 +64,7 @@ async function fetchHtml(url, provider, fetcher) {
       if (declared > MAX_HTML) throw new Error('공연 페이지가 너무 커서 자동 확인하지 못했습니다.');
       const html = await response.text();
       if (Buffer.byteLength(html) > MAX_HTML) throw new Error('공연 페이지가 너무 커서 자동 확인하지 못했습니다.');
-      return html;
+      return { html, finalUrl: response.url || current };
     }
     throw new Error('공연 페이지 이동 횟수가 너무 많습니다.');
   } finally {
@@ -69,8 +76,17 @@ export async function inspectPerformance({ id, url, fetcher = fetch }) {
   const provider = getProvider(id);
   const address = typeof url === 'string' ? url.trim() : '';
   if (!allowedUrl(address, provider)) throw new Error(`${provider.name}의 공식 공연 상세 URL을 입력해주세요.`);
-  const details = parseDetails(await fetchHtml(address, provider, fetcher));
-  return { ...details, url: address };
+  const { html, finalUrl } = await fetchHtml(address, provider, fetcher);
+  const details = parseDetails(html);
+  return {
+    ...details,
+    url: address,
+    finalUrl,
+    provider: provider.name,
+    host: new URL(finalUrl).hostname,
+    checkedAt: new Date().toISOString(),
+    complete: Boolean(details.title && details.venue),
+  };
 }
 
 export { parseDetails };

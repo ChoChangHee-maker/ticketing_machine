@@ -50,7 +50,7 @@ function fixture(id = 'melon') {
   page.frames = () => [frame];
   page.isClosed = () => state.closed;
   page.close = async () => { state.closed = true; page.emit('close'); };
-  page.goto = async address => { page.address = address; state.loads++; };
+  page.goto = async address => { page.address = address; state.loads++; state.onGoto?.(state.loads); };
   page.bringToFront = async () => { state.focused = (state.focused || 0) + 1; };
   const session = { suspended: false, context: { newPage: async () => { state.created++; return page; } } };
   return { page, frame, state, session };
@@ -291,6 +291,38 @@ test('예약 대기 중지 시 티켓처 작업도 대기 상태에서 벗어난
   await runner.task;
   assert.equal(runner.state.status, 'stopped');
   assert.equal(runner.state.jobs.melon.status, 'stopped');
+});
+
+test('예약 실행은 공연 페이지에서 날짜와 회차를 미리 선택하고 예매하기 직전에 대기한다', async () => {
+  const { runner, fixtures } = setup();
+  const at = Date.now() + 2500;
+  const scheduledAt = new Date(at + 9 * 3600000).toISOString().slice(0, 19);
+  await runner.start({ ...configFor(), scheduledAt });
+  const deadline = Date.now() + 1000;
+  while (runner.state.jobs.melon?.status !== 'armed' && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(runner.state.status, 'scheduled');
+  assert.equal(runner.state.jobs.melon.status, 'armed');
+  assert.deepEqual(fixtures.melon.state.clicks, ['#date', '#time']);
+  assert.equal(fixtures.melon.state.loads, 1);
+  await runner.task;
+  assert.deepEqual(fixtures.melon.state.clicks, ['#date', '#time', '#entry', '#zone', '#seat']);
+  assert.equal(fixtures.melon.state.loads, 1);
+});
+
+test('미리 선택할 수 없던 회차는 오픈 시각에 공연 페이지만 한 번 갱신해 다시 찾는다', async () => {
+  const { runner, fixtures } = setup();
+  fixtures.melon.state.missing.add('#date');
+  fixtures.melon.state.onGoto = loads => { if (loads === 2) fixtures.melon.state.missing.delete('#date'); };
+  const at = Date.now() + 2500;
+  const scheduledAt = new Date(at + 9 * 3600000).toISOString().slice(0, 19);
+  await runner.start({ ...configFor(), scheduledAt });
+  const deadline = Date.now() + 1000;
+  while (runner.state.jobs.melon?.status !== 'waiting' && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(fixtures.melon.state.clicks, []);
+  assert.equal(fixtures.melon.state.loads, 1);
+  await runner.task;
+  assert.equal(fixtures.melon.state.loads, 2);
+  assert.deepEqual(fixtures.melon.state.clicks, ['#date', '#time', '#entry', '#zone', '#seat']);
 });
 
 test('공연 페이지 응답 오류를 클릭 시도 전에 알리고 같은 창에서 재개할 수 있다', async () => {

@@ -5,6 +5,8 @@ import { VENUES, findVenue, getVenue } from '../shared/venues.mjs';
 test('요청한 대극장과 기존 공연장을 이름 변형으로 찾는다', () => {
   const names = {
     '광림아트센터 BBCH홀': 'klarts-bbch',
+    '디큐브씨어터': 'dcube-theater',
+    '디큐브 링크아트센터': 'dcube-theater',
     '샤롯데씨어터': 'charlotte-theater',
     '예술의전당 CJ토월극장': 'sac-cj-towol',
     '예술의전당 오페라극장': 'sac-opera',
@@ -33,5 +35,7 @@ test('공연장 도면은 중복되지 않는 실제 선택 키와 공식 자료
   assert.equal(getVenue('sejong-grand').floors[0].seats.length, 1030);
   assert.equal(getVenue('sejong-grand').floors[1].seats.length, 964);
   assert.equal(getVenue('sejong-grand').floors[2].seats.length, 1028);
+  assert.equal(getVenue('dcube-theater').floors[0].seats.length, 724);
+  assert.equal(getVenue('dcube-theater').floors[1].seats.length, 510);
   assert.ok(getVenue('klarts-bbch').floors[0].seats.some(seat => seat.row === 'A' && seat.number === 6));
 });

@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { BrowserManager, findSystemChrome, readLoginSignals } from '../server/browser.mjs';
+import { BrowserManager, findSystemBrowser, findSystemChrome, findSystemEdge, readLoginSignals } from '../server/browser.mjs';
 import { getProvider } from '../shared/providers.mjs';
 
 function page(signals, url = 'https://ticket.melon.com/') {
@@ -315,11 +315,21 @@ test('설치된 일반 Chrome을 찾으면 전용 프로필 브라우저에 사�
   const manager = new BrowserManager({ dataDir, settleMs: 0, browserExecutable: executable, driver: {
     async launchPersistentContext(_profile, options) {
       assert.equal(options.executablePath, executable);
+      if (process.platform === 'win32') assert.deepEqual(options.ignoreDefaultArgs, ['--no-sandbox']);
       return context;
     },
   } });
   t.after(() => manager.close());
   assert.equal((await manager.open('melon')).status, 'verified');
+});
+
+test('브라우저 환경 설정으로 Edge를 우선 선택하고 없으면 Chrome으로 돌아간다', () => {
+  const chrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  const edge = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+  const environment = { PROGRAMFILES: 'C:\\Program Files', 'PROGRAMFILES(X86)': 'C:\\Program Files (x86)', TICKET_ASSISTANT_BROWSER: 'edge' };
+  assert.equal(findSystemEdge(environment, candidate => candidate === edge), edge);
+  assert.equal(findSystemBrowser(environment, candidate => candidate === chrome || candidate === edge), edge);
+  assert.equal(findSystemBrowser(environment, candidate => candidate === chrome), chrome);
 });
 
 test('모든 탭이 닫힌 브라우저는 이전 프로필 연결을 닫고 다시 연다', async t => {

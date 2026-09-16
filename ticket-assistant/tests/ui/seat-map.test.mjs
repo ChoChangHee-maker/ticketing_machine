@@ -20,12 +20,13 @@ test('공연 주소에서 공연장을 찾아 기준 좌석을 선택·저장하
       sessions: new Map(),
       snapshot: () => Object.fromEntries(PROVIDERS.map(provider => [provider.id, { status: 'verified' }])),
       check: async () => ({ status: 'verified' }), close: async () => {},
+      schedule: async (id, { url, date }) => ({ provider: id, url, date, checkedAt: '2099-10-17T10:00:00.000Z', sessions: [{ time: '19:00', casting: `${id} 출연진`, availability: [] }] }),
     };
     runtime = createApp({
       browsers: suppliedBrowsers,
       load: async () => saved,
       save: async input => { saved = validatePreferences(input); return saved; },
-      inspect: async ({ id, url }) => ({ title: `${id} 테스트 공연`, venue: '블루스퀘어 우리은행홀', venueId: 'blue-square-woori', url }),
+      inspect: async ({ id, url }) => ({ title: `${id} 테스트 공연`, venue: '블루스퀘어 우리은행홀', venueId: 'blue-square-woori', url, finalUrl: url, provider: PROVIDERS.find(provider => provider.id === id).name, host: new URL(url).hostname, checkedAt: '2099-10-17T10:00:00.000Z', complete: true }),
     });
     runtime.app.use(express.static(fileURLToPath(new URL('../../dist', import.meta.url))));
     const proxy = express();
@@ -41,11 +42,22 @@ test('공연 주소에서 공연장을 찾아 기준 좌석을 선택·저장하
     page.setDefaultTimeout(10000);
     await page.goto('http://127.0.0.1:' + server.address().port);
     await page.getByRole('heading', { name: '공연장 좌석도에서 선택' }).waitFor();
+    await page.waitForFunction(() => document.querySelector('select option[value="19:00"]'));
+    assert.equal(await page.getByLabel('관람 회차', { exact: true }).evaluate(element => element.tagName), 'SELECT');
+    assert.match(await page.locator('.casting-card').innerText(), /19:00[\s\S]*melon 출연진/);
     assert.equal(await page.locator('.provider-seat-map').count(), 5);
+
+    const melonUrl = page.getByLabel('멜론티켓 공연 URL');
+    await melonUrl.fill('https://ticket.melon.com/performance/index.htm?prodId=214');
+    await melonUrl.press('Tab');
+    const melonProof = page.locator('.provider-seat-map').first().locator('.performance-proof');
+    await melonProof.getByText('공연 정보 확인 완료').waitFor();
+    assert.match(await melonProof.innerText(), /melon 테스트 공연[\s\S]*블루스퀘어 우리은행홀[\s\S]*ticket\.melon\.com/);
+    await page.getByLabel('관람 회차', { exact: true }).selectOption('19:00');
 
     for (const [index, provider] of PROVIDERS.entries()) {
       const card = page.locator('.provider-seat-map').nth(index);
-      await card.getByRole('button', { name: '공연장에서 좌석도 찾기' }).click();
+      await card.getByRole('button', { name: /공연 정보 (?:다시 )?확인/ }).click();
       const seat = card.getByRole('button', { name: '1층 1열 8번', exact: true });
       await seat.waitFor();
       await seat.click();
@@ -81,14 +93,22 @@ test('공연 주소에서 공연장을 찾아 기준 좌석을 선택·저장하
     await page.waitForFunction(() => document.querySelector('.provider-seat-map .chosen-seats'));
     assert.match(await page.locator('.provider-seat-map').first().locator('.chosen-seats').innerText(), /1석/);
     await page.getByLabel('관람 날짜', { exact: true }).fill('2099-10-18');
+    await page.waitForFunction(() => document.querySelector('select option[value="19:00"]'));
+    await page.getByLabel('관람 회차', { exact: true }).selectOption('19:00');
     assert.equal(await page.getByRole('button', { name: '좌석 선택 실행' }).isEnabled(), true);
 
     await page.getByLabel('멜론티켓 공연 URL').fill('https://ticket.melon.com/performance/index.htm?prodId=999');
     assert.equal(await melon.locator('.seat-diagram').count(), 0);
     assert.equal(await page.getByRole('button', { name: '좌석 선택 실행' }).isEnabled(), false);
     await melon.getByLabel('멜론티켓 공연장 직접 선택').selectOption('klarts-bbch');
-    await melon.getByRole('button', { name: '1층 A열 6번', exact: true }).click();
+    const changedSeat = melon.getByRole('button', { name: '1층 A열 6번', exact: true });
+    await changedSeat.click();
     assert.match(await melon.locator('.chosen-seats').innerText(), /1층 A열 6번/);
+    await melon.getByLabel('멜론티켓 공연장 직접 선택').selectOption('dcube-theater');
+    assert.equal(await melon.getByLabel('멜론티켓 공연장 직접 선택').inputValue(), 'dcube-theater');
+    assert.equal(await melon.locator('.diagram-seat').count(), 724);
+    await melon.getByRole('tab', { name: '2층' }).click();
+    assert.equal(await melon.locator('.diagram-seat').count(), 510);
     assert.deepEqual(errors, []);
   } finally {
     if (runtime) await runtime.close();
